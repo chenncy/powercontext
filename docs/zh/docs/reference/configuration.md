@@ -101,11 +101,11 @@ search request 最终 `limit` 的结果。它不会修改已存储 Memory 或索
 external Skill import/fork。未配置模型时，这些 operation 会在持久化 Candidate 前返回 capability error；
 Candidate Review、exact read 和 external Skill scan/list/resolve 仍可使用。
 
-Experience 孵化使用独立的 APScheduler job 和持久化 Source cursor，同时需要 Experience interval 和 generation
-model 设置。每次 activation 最多检查 32 条 Source，并且只把 metadata 包含 `"kind": "task-outcome"` 的 Content
-Source 暴露给模型。Memory 和 Experience job 共用 `POWERCONTEXT_HOME` 下的 scheduler sidecar，但拥有独立的 job
-identity 和业务 cursor；取消其中一个 interval 只会移除对应 job。设置和验证步骤见
-[创建并审核 Experience](../how-to/create-and-review-experience.md)。
+Experience 孵化使用独立的 APScheduler job 和持久化 Source cursor，需要同时设置
+`POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` 与 `POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL`。
+每次 activation 最多检查 32 条 Source，并且只把 metadata 包含 `"kind": "task-outcome"` 的 Content Source 暴露给模型。
+Memory 和 Experience job 共用 `POWERCONTEXT_HOME` 下的 scheduler sidecar，但拥有独立的 job identity 和业务 cursor；取消其中一个 interval 只会移除对应 job。
+设置与验证步骤见[创建并审核 Experience](../how-to/create-and-review-experience.md)。
 
 ### 外部 Codex Skill
 
