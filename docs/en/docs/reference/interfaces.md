@@ -112,7 +112,7 @@ and that dump-config lists the plugin id `powercontext-dsh`. `powercontext docto
 that Pi lists the PowerContext package.
 
 The `candidate` command group exposes the human Review Inbox. See [Review Candidates](../how-to/review-candidates.md)
-for the ordered list, inspect, revise, approve, and reject workflow.
+for the ordered workflow to list, inspect, revise, approve, or reject Candidates.
 
 Generation and revision commands accept repeatable `--source-ref TYPE/ID` and
 `--artifact-ref FAMILY/ID@REVISION` options instead of serialized request files. `--target FAMILY/ID@REVISION`
