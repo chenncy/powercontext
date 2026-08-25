@@ -117,7 +117,7 @@ The command creates a new directory containing:
 `powercontext.json` records the exact Artifact reference and rendered-content hash. The command refuses to replace an
 existing destination. The managed Skill Revision remains authoritative; the directory is a host-local projection.
 
-Start a new Codex session after export so Codex can discover the repository-local Skill.
+Codex detects the exported repository-local Skill automatically. If it does not appear, restart Codex.
 
 ## Evolve a Skill from usage
 

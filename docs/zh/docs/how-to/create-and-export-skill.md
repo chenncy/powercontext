@@ -115,7 +115,7 @@ powercontext skill export \
 `powercontext.json` 记录精确 Artifact 引用和渲染内容哈希。目标目录已存在时，命令会拒绝覆盖。Managed Skill
 Revision 始终是内容权威，目录只是 host-local projection。
 
-导出后开启新的 Codex 会话，让 Codex 发现代码库级 Skill。
+Codex 会自动检测导出的代码库级 Skill。如果没有出现，再重启 Codex。
 
 ## 根据 usage 演进 Skill
 
