@@ -37,6 +37,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_AUTH_TOKEN` | unset | Static bearer token; required when authentication is enabled |
 | `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `true` | Enable the Dashboard at the Server root path `/` |
 | `POWERCONTEXT_SERVER_DASHBOARD_SCOPES` | `[]` | JSON array of selectable Dashboard scopes |
+| `POWERCONTEXT_SERVER_HANDOFF_REPORT_ENABLED` | `true` | Enable Handoff Report and its API routes |
 | `POWERCONTEXT_SERVER_LOGGING_LEVEL` | `INFO` | Operational log level |
 | `POWERCONTEXT_SERVER_LOGGING_FORMAT` | `console` | `console` or structured `json` output |
 | `POWERCONTEXT_SERVER_LOGGING_ACCESS` | `true` | Log external HTTP and logical MCP request completion |
@@ -61,6 +62,10 @@ loopback address. Use TLS before exposing an authenticated Server over a network
 The Dashboard is enabled by default and shares the Server listener and port with the HTTP API and MCP. With no scopes
 configured, the page shows an empty state. Dashboard initialization failures are logged with their direct cause and do
 not prevent the Server HTTP API, MCP, or health checks from starting.
+
+Handoff Report is independently enabled by default at `/handoff-reports`. With no active Report Projects, it shows a
+data-free template preview. See [Use Handoff Report](../how-to/use-handoff-report.md) for catalog setup, inspection,
+Revision writes, and export.
 
 Example with a controlled SQLite path and scheduled extraction:
 

@@ -58,12 +58,14 @@ Claims and checks are either `declared` with no evidence or `verified` with exac
 citation proves identity and availability, not freshness. Current instructions, live workspace state, capabilities,
 and authorization still take precedence over all Work and Handoff records.
 
+For the complete Codex transfer and acknowledgement workflow, see
+[Hand off work in Codex](../how-to/handoff-with-codex.md).
+
 Each Handoff Report JSON Workstream projection also returns `handoff_revision_count`,
 `handoff_history_truncated`, and `handoff_history`. History contains at most the latest 20 Revision summaries through
-the frozen selection in ascending Revision order; the page presents them latest-first and refreshes every five
-seconds. Unsent edits or an active Handoff action pause automatic refresh. The Codex scope resolver can bind the
-current Git workspace once to a fixed Workstream scope. That binding takes precedence over Git remote and path
-derivation, but remains below explicit scope configuration.
+the frozen selection in ascending Revision order. The Codex scope resolver can bind the current Git workspace once to
+a fixed Workstream scope. That binding takes precedence over Git remote and path derivation, but remains below explicit
+scope configuration. For the web workflow, see [Use Handoff Report](../how-to/use-handoff-report.md).
 
 ## DeepSeek Harness plugin
 
