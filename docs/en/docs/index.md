@@ -49,7 +49,7 @@ overview:
           description: Generate and review a managed Skill, then export one exact Revision to Codex.
           href: en/docs/how-to/create-and-export-skill/
         - title: Handoff Report
-          description: Inspect Workstreams, save Handoff Revisions, compare activity, and export Markdown.
+          description: Inspect scopes, save Handoff Revisions, compare activity, and export Markdown.
           href: en/docs/how-to/use-handoff-report/
         - title: Troubleshoot
           description: Diagnose connection, configuration, and integration problems.

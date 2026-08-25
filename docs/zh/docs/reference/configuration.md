@@ -61,8 +61,8 @@ readiness endpoint 仍然公开。明文 HTTP 应只用于 loopback 地址；通
 Dashboard 默认启用，并与 HTTP API、MCP 共用监听地址和端口。默认未配置 scope，页面会显示空状态；Dashboard
 初始化失败只记录包含直接原因的 warning，不影响 Server 的 HTTP API、MCP 和健康检查启动。
 
-Handoff Report 独立默认启用，路径为 `/handoff-reports`。没有 active Report Project 时，页面显示无数据模板预览。
-Catalog 设置、检查、Revision 写入和导出步骤见[使用 Handoff Report](../how-to/use-handoff-report.md)。
+Handoff Report 独立默认启用，路径为 `/handoff-reports`。没有任何 scope 包含 committed Handoff 时，页面显示无数据
+模板预览。Scope discovery、检查、Revision 写入和导出步骤见[使用 Handoff Report](../how-to/use-handoff-report.md)。
 
 指定 SQLite 路径并启用定时提取的示例：
 

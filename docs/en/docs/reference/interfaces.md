@@ -61,11 +61,14 @@ and authorization still take precedence over all Work and Handoff records.
 For the complete Codex transfer and acknowledgement workflow, see
 [Hand off work in Codex](../how-to/handoff-with-codex.md).
 
-Each Handoff Report JSON Workstream projection also returns `handoff_revision_count`,
-`handoff_history_truncated`, and `handoff_history`. History contains at most the latest 20 Revision summaries through
-the frozen selection in ascending Revision order. The Codex scope resolver can bind the current Git workspace once to
-a fixed Workstream scope. That binding takes precedence over Git remote and path derivation, but remains below explicit
-scope configuration. For the web workflow, see [Use Handoff Report](../how-to/use-handoff-report.md).
+Handoff Report lists scopes that contain a committed Handoff, and `get_handoff_report` requires `scope_id`.
+`project_id` remains deprecated wire-compatibility input and is ignored during report generation. Each returned
+Workstream projection includes `handoff_revision_count`, `handoff_history_truncated`, and `handoff_history`, with at
+most the latest 20 Revision summaries through the frozen selection. For the web workflow, see
+[Use Handoff Report](../how-to/use-handoff-report.md).
+
+The Codex scope resolver can bind the current Git workspace once to a fixed Workstream scope. That binding takes
+precedence over Git remote and path derivation, but remains below explicit scope configuration.
 
 ## DeepSeek Harness plugin
 

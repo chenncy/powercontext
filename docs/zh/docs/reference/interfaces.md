@@ -55,10 +55,13 @@ Claim 和 check 要么是没有 evidence 的 `declared`，要么是拥有同 sco
 
 完整 Codex 转交和接收确认流程见[在 Codex 中交接工作](../how-to/handoff-with-codex.md)。
 
-Handoff Report 的 JSON Workstream projection 同时返回 `handoff_revision_count`、`handoff_history_truncated` 和
-`handoff_history`。History 最多包含 frozen selection 之前最近 20 个 Revision 摘要，并按 Revision 升序返回。Codex
-scope resolver 支持把当前 Git 工作区一次绑定到固定 Workstream scope，绑定优先于 Git remote 和路径推导，但低于显式
-scope 配置。Web 操作见[使用 Handoff Report](../how-to/use-handoff-report.md)。
+Handoff Report 会列出包含 committed Handoff 的 scope，`get_handoff_report` 要求提供 `scope_id`。`project_id` 仅作为
+deprecated wire-compatibility input 保留，生成报告时会被忽略。每个返回的 Workstream projection 包含
+`handoff_revision_count`、`handoff_history_truncated` 和 `handoff_history`，最多返回 frozen selection 之前最近 20 个
+Revision 摘要。Web 操作见[使用 Handoff Report](../how-to/use-handoff-report.md)。
+
+Codex scope resolver 支持把当前 Git 工作区一次绑定到固定 Workstream scope，绑定优先于 Git remote 和路径推导，但低于
+显式 scope 配置。
 
 ## DeepSeek Harness 插件
 

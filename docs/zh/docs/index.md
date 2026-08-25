@@ -49,7 +49,7 @@ overview:
           description: 生成并审核 managed Skill，再将一个精确 Revision 导出给 Codex。
           href: zh/docs/how-to/create-and-export-skill/
         - title: Handoff Report
-          description: 检查 Workstream，保存 Handoff Revision，比较 activity，并导出 Markdown。
+          description: 检查 scope，保存 Handoff Revision，比较 activity，并导出 Markdown。
           href: zh/docs/how-to/use-handoff-report/
         - title: 排查问题
           description: 诊断连接、配置和集成问题。

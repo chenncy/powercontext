@@ -63,9 +63,9 @@ The Dashboard is enabled by default and shares the Server listener and port with
 configured, the page shows an empty state. Dashboard initialization failures are logged with their direct cause and do
 not prevent the Server HTTP API, MCP, or health checks from starting.
 
-Handoff Report is independently enabled by default at `/handoff-reports`. With no active Report Projects, it shows a
-data-free template preview. See [Use Handoff Report](../how-to/use-handoff-report.md) for catalog setup, inspection,
-Revision writes, and export.
+Handoff Report is independently enabled by default at `/handoff-reports`. When no scope contains a committed Handoff,
+it shows a data-free template preview. See [Use Handoff Report](../how-to/use-handoff-report.md) for scope discovery,
+inspection, Revision writes, and export.
 
 Example with a controlled SQLite path and scheduled extraction:
 
