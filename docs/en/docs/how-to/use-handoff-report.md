@@ -41,8 +41,8 @@ Search by `scope_id`, then select the scope. The page requests its report with `
 objective, state, disposition, next action, and known omissions.
 
 The report also shows the latest Handoff history, newest first. The JSON projection contains at most the latest 20
-Revision summaries and marks when earlier history was truncated. `project_id` remains in the HTTP request only for wire
-compatibility; it is deprecated and ignored when the Server generates a scope report.
+Revision summaries and marks when earlier history was truncated. The HTTP request schema retains an optional
+`project_id` field for wire compatibility; it is deprecated and ignored when the Server generates a scope report.
 
 The page starts a five-second refresh timer, but background requests currently run only when a bearer token is stored.
 With authentication disabled, use **Refresh** to load changes manually. Background refresh also pauses while edits are
@@ -54,7 +54,7 @@ Select **Edit**, update the five current-snapshot fields as one document, then s
 prepares and commits the complete document as a new immutable Handoff Revision.
 
 Saving is a write operation. Scope switching stays paused while the editor is open. The page does not record receiver
-acceptance; acknowledgements and Task Outcomes remain read-only entries in the activity timeline.
+acceptance; acknowledgements and Task Outcomes remain read-only entries in the **Continuity timeline**.
 
 ## 4. Understand the current period controls
 

@@ -69,5 +69,5 @@ failed、skipped、timed-out、unavailable 或 unknown check。生成的 Source 
 ## 选择正确的长期记录
 
 任务 milestone 使用 committed Handoff；可独立复用的决定、约束、状态和下一步使用 Memory。Prepared Handoff 仍是临时
-载体。区别见[理解 Memory 和 Handoff](../explanation/memory-and-handoff.md)，查看 committed history 和 activity 时使用
-[Handoff Report](use-handoff-report.md)。
+载体。区别见[理解 Memory 和 Handoff](../explanation/memory-and-handoff.md)，查看 committed history 和 continuity record
+时使用[Handoff Report](use-handoff-report.md)。

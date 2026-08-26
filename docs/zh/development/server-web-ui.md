@@ -98,11 +98,11 @@ document-level 结构放在 `base.html`。一个片段已经被复用，或者�
 
 ## 添加 Handoff Report 页面
 
-启用 Handoff Report 后，Server 会在 `/handoff-reports` 托管项目交接页面，不再要求同时启用 scoped statistics Dashboard 或配置其 scope 列表。单独启用 Dashboard 时，根路径 `/` 仍提供原有统计页面。两个页面只复用 `base.html`、header、footer、`auth.js`、主题和 locale storage，不共享统计或报告计算逻辑。
+启用 Handoff Report 后，Server 会在 `/handoff-reports` 托管 scope 交接页面，不再要求同时启用 scoped statistics Dashboard 或配置其 scope 列表。单独启用 Dashboard 时，根路径 `/` 仍提供原有统计页面。两个页面只复用 `base.html`、header、footer、`auth.js`、主题和 locale storage，不共享统计或报告计算逻辑。
 
 Handoff Report 页面通过 `POST /v1/handoff-reports/scopes/list-known` 获取当前 token 可访问且存在 committed Handoff 的 exact `scope_id`，并将它作为可搜索范围选择器的值。选择范围后，浏览器通过 `POST /v1/handoff-reports/get` 发送必填 `scope_id` 请求 canonical JSON；Project catalog 和 `project_id` 不参与报告选择。页面继续以完整宽度显示当前精确交接快照。
 
-当前快照把目标、当前状态、处置状态、下一步和已知缺失作为一份完整交接内容展示。一个“编辑”操作会同时打开五个字段，一个“保存新版本”操作会把完整内容 prepare 并 commit 为新的不可变 Handoff Revision。编辑器打开期间暂停 scope 切换和后台刷新。页面不提供接手方决策操作，已有连续性记录继续通过只读时间线展示。除显式保存交接版本外，浏览器只格式化 `summary`、`coverage`、Workstream 状态和 digest，不重新计算报告口径。
+当前快照把目标、当前状态、处置状态、下一步和已知缺失作为一份完整交接内容展示。一个“编辑”操作会同时打开五个字段，一个“保存新版本”操作会把完整内容 prepare 并 commit 为新的不可变 Handoff Revision。编辑器打开期间暂停 scope 切换和后台刷新。页面不提供接手方决策操作，已有连续性记录继续通过只读连续性时间线展示。除显式保存交接版本外，浏览器只格式化 `summary`、`coverage`、Workstream 状态和 digest，不重新计算报告口径。
 
 已知 scope 请求成功但没有任何 committed Handoff 时，页面会以明确标记的无数据模板预览替代报告控件。点击重试会重新枚举 Handoff heads；一旦某个 scope 完成交接提交，就以真实报告替换预览。预览不会创建 Handoff，也不会请求伪造报告数据。
 

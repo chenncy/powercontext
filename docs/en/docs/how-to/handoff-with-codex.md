@@ -78,4 +78,4 @@ Experience incubation. It does not approve an Experience or grant execution auth
 Use a committed Handoff for a task milestone and Memory for independently reusable decisions, constraints, state, or
 next steps. A Prepared Handoff remains a temporary carrier. Read
 [Memory and Handoff](../explanation/memory-and-handoff.md) for the distinction, and use
-[Handoff Report](use-handoff-report.md) to inspect committed history and activity.
+[Handoff Report](use-handoff-report.md) to inspect committed history and continuity records.

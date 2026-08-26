@@ -39,8 +39,8 @@ Handoff 后即可发现 scope，不需要创建 Report Project 或注册 Workstr
 和 known omissions。
 
 报告还会按最新优先展示 Handoff history。JSON projection 最多包含最近 20 个 Revision 摘要，并标明更早的 history
-是否被截断。HTTP request 仍保留 `project_id` 以兼容旧 wire contract，但该字段已 deprecated，Server 生成 scope
-report 时会忽略它。
+是否被截断。HTTP request schema 保留可选的 `project_id` 字段以兼容旧 wire contract，但该字段已 deprecated，
+Server 生成 scope report 时会忽略它。
 
 页面会启动 5 秒刷新 timer，但当前只有保存了 Bearer token 才会发送后台请求。未启用鉴权时，使用 **刷新** 手动加载
 变更。存在未保存编辑或正在执行 Handoff action 时，后台刷新也会暂停。
@@ -51,7 +51,7 @@ report 时会忽略它。
 commit 完整内容，创建新的不可变 Handoff Revision。
 
 保存属于写操作。编辑器打开时，scope 切换保持暂停。页面不记录接收方是否接受；Acknowledgement 和 Task Outcome
-只作为只读记录显示在 activity timeline 中。
+只作为只读记录显示在 **连续性时间线** 中。
 
 ## 4. 了解当前周期控件
 
