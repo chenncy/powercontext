@@ -89,8 +89,9 @@ inspected boundary and returns a temporary Prepared Handoff. Committing a Handof
 the user wants a milestone. The receiver resolves the Handoff and records an Acknowledgement; a Task Outcome preserves
 the final status and checks as Source evidence.
 
-The [Handoff Report](../how-to/use-handoff-report.md) projects Handoff Revisions and report-owned activity for
-inspection and export. It does not rewrite Memory or the underlying Handoff history.
+The [Handoff Report](../how-to/use-handoff-report.md) projects current Handoff Revisions for inspection and export. The
+current scope report does not yet include Activity events or period comparison, and it does not rewrite Memory or the
+underlying Handoff history.
 
 ## Interfaces expose different parts of the same Server
 

@@ -80,8 +80,8 @@ Work Contract 将目标和完成边界保存为 Source 证据。`handoff_current
 Handoff。只有用户需要保留里程碑时，commit Handoff 才创建长期 Revision。接收方解析 Handoff 并记录
 Acknowledgement；Task Outcome 将最终状态和检查结果保存为 Source 证据。
 
-[Handoff Report](../how-to/use-handoff-report.md) 将 Handoff Revision 和 report-owned activity 投影为可检查、可导出的
-视图。它不会改写 Memory 或底层 Handoff history。
+[Handoff Report](../how-to/use-handoff-report.md) 将当前 Handoff Revision 投影为可检查、可导出的视图。当前 scope
+report 尚不包含 Activity event 或 period comparison，也不会改写 Memory 或底层 Handoff history。
 
 ## 各接口暴露同一个 Server 的不同部分
 

@@ -67,6 +67,11 @@ Workstream projection includes `handoff_revision_count`, `handoff_history_trunca
 most the latest 20 Revision summaries through the frozen selection. For the web workflow, see
 [Use Handoff Report](../how-to/use-handoff-report.md).
 
+The current scope report returns no Activity events, reports `activity_coverage=not_configured`, and has no period
+comparison. Period input is normalized but does not filter Activity. The HTTP and Python Client Markdown operations
+remain available without a token when Server authentication is disabled; the current browser download and background
+refresh controls require a stored bearer token.
+
 The Codex scope resolver can bind the current Git workspace once to a fixed Workstream scope. That binding takes
 precedence over Git remote and path derivation, but remains below explicit scope configuration.
 

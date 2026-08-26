@@ -60,6 +60,10 @@ deprecated wire-compatibility input 保留，生成报告时会被忽略。每�
 `handoff_revision_count`、`handoff_history_truncated` 和 `handoff_history`，最多返回 frozen selection 之前最近 20 个
 Revision 摘要。Web 操作见[使用 Handoff Report](../how-to/use-handoff-report.md)。
 
+当前 scope report 不返回 Activity event，`activity_coverage=not_configured`，并且没有 period comparison。Period
+输入只会被规范化，不会筛选 Activity。Server 未启用鉴权时，HTTP 和 Python Client 的 Markdown operation 仍可不带
+token 使用；当前浏览器下载和后台刷新控件要求已保存的 Bearer token。
+
 Codex scope resolver 支持把当前 Git 工作区一次绑定到固定 Workstream scope，绑定优先于 Git remote 和路径推导，但低于
 显式 scope 配置。
 
