@@ -60,11 +60,15 @@ receiver check 都是 confirmed 时，才能标记为 `accepted`。解析时可�
 到达真实的完成或中断边界时，保存任务结果：
 
 > 记录 PowerContext Task Outcome。保留精确 status 和检查结果，列出 produced Artifact 和剩余工作；如果结果覆盖
-> accepted Handoff，请关联对应 receipt。
+> committed Handoff Revision，只关联 accepted exact Handoff receipt。
 
 `record_task_outcome` 会保留 `succeeded`、`partial`、`blocked`、`failed`、`cancelled` 或 `unknown`，不会抹掉
 failed、skipped、timed-out、unavailable 或 unknown check。生成的 Source 可用于后续 Handoff 和经过审核的 Experience
 孵化，但不会批准 Experience 或授予执行权限。
+
+`handoff_receipt_ref` 只接受 status 为 `accepted`、selection 为 `exact`，并且 `selected_revision` 指向 committed
+Handoff 的 receipt。Accepted Prepared Handoff receipt 不能关联。可以让 Outcome 保持不关联；如果需要关联，应先 commit
+Prepared Handoff，再对该 exact Revision 完成 acknowledgement，并关联新生成的 receipt。
 
 ## 选择正确的长期记录
 

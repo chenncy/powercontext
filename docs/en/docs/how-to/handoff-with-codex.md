@@ -67,11 +67,16 @@ returned by that resolution.
 At a real completion or interruption boundary, preserve the result:
 
 > Record the PowerContext Task Outcome. Keep the exact status and check results, list produced Artifacts and remaining
-> work, and link the accepted Handoff receipt when this outcome covers it.
+> work, and link only the accepted exact Handoff receipt when this outcome covers a committed Handoff Revision.
 
 `record_task_outcome` stores `succeeded`, `partial`, `blocked`, `failed`, `cancelled`, or `unknown` without erasing
 failed, skipped, timed-out, unavailable, or unknown checks. The resulting Source can support later Handoffs and reviewed
 Experience incubation. It does not approve an Experience or grant execution authority.
+
+`handoff_receipt_ref` accepts only a receipt whose status is `accepted`, selection is `exact`, and
+`selected_revision` identifies the committed Handoff. An accepted Prepared Handoff receipt cannot be linked. Leave the
+outcome unlinked, or first commit the Prepared Handoff and acknowledge that exact Revision before linking its new
+receipt.
 
 ## Choose the right durable record
 
