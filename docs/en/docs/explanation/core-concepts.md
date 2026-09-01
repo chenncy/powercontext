@@ -55,7 +55,7 @@ apply after another writer changes the proposal.
 
 Approval writes an immutable Artifact Revision and returns its exact `result_artifact`. Rejection records a decision
 reason without creating an Artifact. Both decisions are terminal. See
-[Review Candidates](../how-to/review-candidates.md) for the procedure.
+[Review Candidates](/en/docs/how-to/review-candidates/) for the procedure.
 
 ## Experience and Skill have different availability
 
@@ -89,7 +89,7 @@ inspected boundary and returns a temporary Prepared Handoff. Committing a Handof
 the user wants a milestone. The receiver resolves the Handoff and records an Acknowledgement; a Task Outcome preserves
 the final status and checks as Source evidence.
 
-The [Handoff Report](../how-to/use-handoff-report.md) projects current Handoff Revisions for inspection and export. The
+The [Handoff Report](/en/docs/how-to/use-handoff-report/) projects current Handoff Revisions for inspection and export. The
 current scope report does not yet include Activity events or period comparison, and it does not rewrite Memory or the
 underlying Handoff history.
 
@@ -103,6 +103,6 @@ Model generation, human Review, and execution authority remain separate. A model
 approve an Artifact Revision, and export can create a host-local copy. None of those steps grants an Agent permission
 to execute instructions.
 
-Use [Interfaces](../reference/interfaces.md) for current surface availability and
-[Configuration](../reference/configuration.md) for exact settings and defaults. RFCs record design decisions and may
+Use [Interfaces](/en/docs/reference/interfaces/) for current surface availability and
+[Configuration](/en/docs/reference/configuration/) for exact settings and defaults. RFCs record design decisions and may
 not describe the current implementation.

@@ -66,6 +66,6 @@ approval reports a conflict. The reviewer must inspect the new head before decid
 Earlier approved Revisions remain available for exact reads. An exported Skill directory is only a copy of one exact
 Revision; the managed Artifact remains the content authority.
 
-Use [Review Candidates](../how-to/review-candidates.md) for the review procedure,
-[Create and review an Experience](../how-to/create-and-review-experience.md) for Experience operations, and
-[Create and export a managed Skill](../how-to/create-and-export-skill.md) for Skill operations.
+Use [Review Candidates](/en/docs/how-to/review-candidates/) for the review procedure,
+[Create and review an Experience](/en/docs/how-to/create-and-review-experience/) for Experience operations, and
+[Create and export a managed Skill](/en/docs/how-to/create-and-export-skill/) for Skill operations.

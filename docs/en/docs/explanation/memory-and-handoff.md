@@ -37,4 +37,4 @@ explicitly asks to retain a milestone.
 | Retain a verified Handoff milestone for long-term reuse | Commit the Handoff on user request, or save it as Memory |
 
 Never store secrets, access tokens, or other sensitive information in either. For the Handoff procedure, see
-[Hand off work in Codex](../how-to/handoff-with-codex.md).
+[Hand off work in Codex](/en/docs/how-to/handoff-with-codex/).
