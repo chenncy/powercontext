@@ -14,7 +14,7 @@ scope until it has a Plugin channel, implementation, tests, and support qualific
 
 The words **MUST**, **SHOULD**, and **MAY** are normative requirements for plugin implementation and review.
 
-This contract is derived from [RFC 1299: Local Server availability and service installation](../rfcs/1299_local_server_availability_and_service_installation/).
+This contract is derived from [RFC 1299: Local Server availability and service installation](../rfcs/1299_local_server_availability_and_service_installation.md).
 The original [RFC PR #1299](https://github.com/oceanbase/powercontext/pull/1299) is tracked by [issue #1298](https://github.com/oceanbase/powercontext/issues/1298).
 
 ## What a plugin must report

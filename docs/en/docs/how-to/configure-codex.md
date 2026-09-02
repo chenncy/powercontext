@@ -67,8 +67,8 @@ instructions before acting on them.
 
 Memory stores durable, reusable decisions, constraints, and state. A Handoff temporarily transfers the current task to
 another task, session, or model. It must be explicitly prepared, inspected, and delivered, rather than substituted with
-a few Memory entries. Read [Memory and Handoff](../explanation/memory-and-handoff/) for the boundary and
-[Hand off work in Codex](handoff-with-codex/) for the procedure.
+a few Memory entries. Read [Memory and Handoff](../explanation/memory-and-handoff.md) for the boundary and
+[Hand off work in Codex](handoff-with-codex.md) for the procedure.
 
 ## Control prompt capture
 

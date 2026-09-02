@@ -32,4 +32,4 @@ Draft 和 Prepared Handoff 默认不是长期项目知识。只有用户明确�
 | 保存已经验证、需要长期复用的交接里程碑 | 经用户要求提交 Handoff，或保存为 Memory |
 
 无论使用哪一种，都不要存储密钥、访问令牌或其他敏感信息。使用 Handoff 的具体步骤见
-[在 Codex 中交接工作](../how-to/handoff-with-codex/)。
+[在 Codex 中交接工作](../how-to/handoff-with-codex.md)。
