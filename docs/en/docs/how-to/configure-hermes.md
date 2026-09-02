@@ -83,7 +83,7 @@ the file:
 | `POWERCONTEXT_HERMES_WORKSTREAM` | Read the shared Git-private Workstream binding; enabled by default |
 
 Let the Hermes wizard store authorization in its protected `.env` secret store; do not put the token in
-`config.json`. Use plain HTTP only for a loopback Server. See [Deploy the Server](/en/docs/how-to/deploy-server/) before connecting
+`config.json`. Use plain HTTP only for a loopback Server. See [Deploy the Server](deploy-server/) before connecting
 to a remote deployment. Evaluation traces contain prompts and recalled context; keep them local and protect them as
 sensitive data.
 

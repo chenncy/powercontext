@@ -129,7 +129,7 @@ local project path.
 normal interactive use.
 
 The timeout and flush controls are listed in the
-[configuration reference](/en/docs/reference/configuration/#claude-code-plugin). They apply to the Hook process; the MCP
+[configuration reference](../reference/configuration/#claude-code-plugin). They apply to the Hook process; the MCP
 client remains managed by Claude Code.
 
 ## Connect an authenticated Server

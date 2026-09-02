@@ -61,6 +61,6 @@ Managed Skill 包含名称、用于发现的描述、instructions、validation c
 更早的 approved Revision 仍可被精确读取。导出的 Skill 目录只是某个精确 Revision 的副本，managed Artifact 始终是内容
 权威。
 
-审核步骤见[审核 Candidate](/zh/docs/how-to/review-candidates/)，Experience 操作见
-[创建并审核 Experience](/zh/docs/how-to/create-and-review-experience/)，Skill 操作见
-[创建并导出 managed Skill](/zh/docs/how-to/create-and-export-skill/)。
+审核步骤见[审核 Candidate](../how-to/review-candidates/)，Experience 操作见
+[创建并审核 Experience](../how-to/create-and-review-experience/)，Skill 操作见
+[创建并导出 managed Skill](../how-to/create-and-export-skill/)。

@@ -35,4 +35,4 @@ export POWERCONTEXT_SERVER_EXTERNAL_SKILLS='{
 `allow_managed_publish` 默认是 `false`。只在允许 authenticated Server 发布 approved managed Skill 的 target 上将其设为
 `true`。发布不能选择任意路径，也不会覆盖外部或已被修改的 package。
 
-配置 schema 和兼容格式见[配置](/zh/docs/reference/configuration/)。
+配置 schema 和兼容格式见[配置](../reference/configuration/)。

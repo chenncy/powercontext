@@ -49,7 +49,7 @@ proposal version 和对应的精确证据。Review 写操作使用 `expected_ver
 静默作用于旧内容。
 
 批准会写入不可变 Artifact Revision，并返回精确的 `result_artifact`。拒绝只记录 decision reason，不创建 Artifact。
-两种决定都是终态。操作步骤见[审核 Candidate](/zh/docs/how-to/review-candidates/)。
+两种决定都是终态。操作步骤见[审核 Candidate](../how-to/review-candidates/)。
 
 ## Experience 和 Skill 的可用方式不同
 
@@ -80,7 +80,7 @@ Work Contract 将目标和完成边界保存为 Source 证据。`handoff_current
 Handoff。只有用户需要保留里程碑时，commit Handoff 才创建长期 Revision。接收方解析 Handoff 并记录
 Acknowledgement；Task Outcome 将最终状态和检查结果保存为 Source 证据。
 
-[Handoff Report](/zh/docs/how-to/use-handoff-report/) 将当前 Handoff Revision 投影为可检查、可导出的视图。当前 scope
+[Handoff Report](../how-to/use-handoff-report/) 将当前 Handoff Revision 投影为可检查、可导出的视图。当前 scope
 report 尚不包含 Activity event 或 period comparison，也不会改写 Memory 或底层 Handoff history。
 
 ## 各接口暴露同一个 Server 的不同部分
@@ -91,5 +91,5 @@ HTTP 是完整的远程应用契约，Python Client 提供类型化访问，MCP 
 模型生成、人工 Review 和执行权限彼此独立。模型可以提出内容，Review 可以批准 Artifact Revision，导出可以创建
 host-local 副本；这些步骤都不会授予 Agent 执行 instructions 的权限。
 
-当前接口可用范围见[接口](/zh/docs/reference/interfaces/)，精确设置和默认值见[配置](/zh/docs/reference/configuration/)。RFC 记录
+当前接口可用范围见[接口](../reference/interfaces/)，精确设置和默认值见[配置](../reference/configuration/)。RFC 记录
 设计决策，可能与当前实现不同。

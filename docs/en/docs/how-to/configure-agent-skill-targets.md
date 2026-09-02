@@ -36,4 +36,4 @@ only scans immediate package directories under listed targets. It does not infer
 publish an approved managed Skill. Publication cannot select an arbitrary path or overwrite a foreign or modified
 package.
 
-For the configuration schema and compatibility form, see [Configuration](/en/docs/reference/configuration/).
+For the configuration schema and compatibility form, see [Configuration](../reference/configuration/).
