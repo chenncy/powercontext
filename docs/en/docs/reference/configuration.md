@@ -6,9 +6,9 @@ description: PowerContext paths, Server, Client, inference, and Agent integratio
 # Configuration
 
 PowerContext reads configuration from environment variables when each process starts. The CLI does not search for a
-`.env` file automatically. A command that accepts `--env-file` reads only the values in that file for Server settings;
-values in the file override same-named process values. Agent hosts can load their own environment files according to
-their host-specific rules.
+`.env` file automatically. A command that accepts `--env-file` loads environment assignments from that file, including
+Server and provider settings, and overrides same-named process values. Agent hosts can load their own environment files
+according to their host-specific rules.
 
 For the configuration-file workflow, including generation, redacted inspection, validation, and launch, see
 [Configure a Server environment](../how-to/configure-server-environment.md). Treat every environment file as a
