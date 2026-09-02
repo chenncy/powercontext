@@ -1,20 +1,22 @@
 ---
 template: docs-overview.html
-title: Choose an Agent or API and complete the first loop
+title: Choose an Agent or API
 description: Add the HTTP Memory API to an existing AI application, or configure an Agent and verify Memory and Handoff.
 page_type: docs-overview
 overview:
   intro: Choose a tutorial to learn one complete path, a how-to guide to finish a specific task, an explanation to understand system behavior, or a reference page to look up current contracts and settings.
   sections:
-    - title: Recommended learning path
-      description: Complete a local API or Agent loop first, then connect another host or adopt the complete work workflow.
+    - title: Start here
+      description: Complete an API or Agent quickstart first. The remaining guides help you continue in the Agent you use.
       cards:
         - title: HTTP API lifecycle tutorial
           description: Use one small Python flow to connect context, Experience, Skill, and Review; use Scalar for endpoint reference.
           href: en/docs/tutorials/api-quickstart/
+          featured: true
         - title: Agent step-by-step quickstart
           description: Choose a host, install and diagnose it, complete Memory, then use its one-line, pc_*, or /pc Handoff path.
           href: en/docs/tutorials/agent-quickstart/
+          featured: true
         - title: Complete Codex tutorial
           description: Go deeper into the Codex Hook, MCP Skill, Memory lifecycle, and one-line durable Handoff.
           href: en/docs/tutorials/codex-quickstart/
