@@ -5,8 +5,8 @@ description: PowerContext 路径、Server、Client、推理和 Agent 集成环�
 
 # 配置
 
-PowerContext 进程启动时从环境变量读取配置。CLI 不会自动搜索 `.env` 文件。接受 `--env-file` 的命令只从该文件读取
-Server 设置，文件中的赋值会覆盖进程中的同名值。Agent 宿主可按自身规则加载环境文件。
+PowerContext 进程启动时从环境变量读取配置。CLI 不会自动搜索 `.env` 文件。接受 `--env-file` 的命令会从该文件加载环境变量（包括
+Server 与 provider 设置），并覆盖进程中的同名值。Agent 宿主可按自身规则加载环境文件。
 
 生成、脱敏查看、校验和启动配置文件的完整流程见[配置 Server 环境](../how-to/configure-server-environment.md)。所有环境
 文件都应视为包含机密的部署产物。
