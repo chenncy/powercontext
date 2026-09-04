@@ -248,6 +248,8 @@ def test_prepare_smoke_run_writes_non_overwritable_provenance(tmp_path: Path) ->
         assert manifest["upstream"]["harness_commit"] == UPSTREAM_HARNESS_COMMIT
         assert manifest["dataset"]["revision"] == "fixture-data-revision"
         assert manifest["dataset_lock"]["content_sha256"] == hashlib.sha256(lock.read_bytes()).hexdigest()
+        assert manifest["smoke_manifest"]["content_sha256"] == hashlib.sha256(smoke.read_bytes()).hexdigest()
+        assert "path_sha256" not in manifest["smoke_manifest"]
         with pytest.raises(LongMemEvalV2CatalogError, match="Refusing to overwrite"):
             prepare_smoke_run(
                 data_root=root,

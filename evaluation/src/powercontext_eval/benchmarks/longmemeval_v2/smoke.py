@@ -84,7 +84,7 @@ def prepare_smoke_run(
             },
             "dataset_lock": {"content_sha256": hashlib.sha256(dataset_lock.read_bytes()).hexdigest()},
             "smoke_manifest": {
-                "path_sha256": hashlib.sha256(smoke_manifest.read_bytes()).hexdigest(),
+                "content_sha256": hashlib.sha256(smoke_manifest.read_bytes()).hexdigest(),
                 "subset_sha256": hashlib.sha256(subset_path.read_bytes()).hexdigest(),
             },
         },
