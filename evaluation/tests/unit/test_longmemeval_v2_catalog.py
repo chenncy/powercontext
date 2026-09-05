@@ -34,6 +34,8 @@ from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
 )
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import prepare_smoke_run
 
+LOCKS = Path(__file__).parents[2] / "locks"
+
 
 def _write_jsonl(path: Path, values: list[dict[str, object]]) -> None:
     path.write_text("".join(json.dumps(value) + "\n" for value in values), encoding="utf-8")
@@ -174,6 +176,19 @@ def test_catalog_skips_blank_jsonl_rows_like_the_upstream_loader(tmp_path: Path)
     assert len(catalog.questions) == 5
 
 
+def test_catalog_streams_input_files_without_reading_them_all_at_once(monkeypatch, tmp_path: Path) -> None:
+    root = data_root(tmp_path)
+
+    def read_bytes(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("catalog must stream large input files")
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    catalog = LongMemEvalV2Catalog.load(root, tier="small")
+
+    assert len(catalog.questions) == 5
+
+
 def test_smoke_manifest_is_fixed_and_validated_against_the_catalog(tmp_path: Path) -> None:
     root = data_root(tmp_path)
     manifest = smoke_manifest(tmp_path / "smoke.json")
@@ -192,6 +207,22 @@ def test_dataset_lock_pins_exact_file_digests(tmp_path: Path) -> None:
     (root / "questions.jsonl").write_text("{}\n", encoding="utf-8")
     with pytest.raises(LongMemEvalV2CatalogError, match="SHA-256 mismatch"):
         LongMemEvalV2Catalog.load(root, tier=loaded.tier, expected_digests=loaded.file_digests)
+
+
+def test_checked_in_small_smoke_contract_is_valid() -> None:
+    lock = load_dataset_lock(LOCKS / "longmemeval-v2-small-v1.dataset-lock.json")
+    smoke = load_smoke_manifest(LOCKS / "longmemeval-v2-small-v1.smoke.json")
+
+    assert lock.tier == "small"
+    assert smoke.tier == lock.tier
+    assert len(smoke.cases) == 10
+    assert {case.ability for case in smoke.cases} == {
+        "dynamic_state",
+        "environment_gotchas",
+        "premise_awareness",
+        "static_state",
+        "workflow_knowledge",
+    }
 
 
 def test_harness_checkout_requires_the_exact_pinned_revision(monkeypatch, tmp_path: Path) -> None:

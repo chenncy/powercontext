@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -153,13 +153,12 @@ class LongMemEvalV2Catalog:
             "trajectories.jsonl": root / "trajectories.jsonl",
             f"haystacks/lme_v2_{tier}.json": root / "haystacks" / f"lme_v2_{tier}.json",
         }
-        payloads = {name: _read_bytes(path, name) for name, path in paths.items()}
-        digests = MappingProxyType({name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()})
+        digests = MappingProxyType({name: _file_digest(path, name) for name, path in paths.items()})
         _validate_expected_digests(digests, expected_digests)
 
-        questions, source_question_ids = _questions(payloads["questions.jsonl"])
-        trajectories = _trajectories(payloads["trajectories.jsonl"])
-        haystack = _haystack(payloads[f"haystacks/lme_v2_{tier}.json"])
+        questions, source_question_ids = _questions(paths["questions.jsonl"])
+        trajectories = _trajectories(paths["trajectories.jsonl"])
+        haystack = _haystack(paths[f"haystacks/lme_v2_{tier}.json"])
         _validate_haystack(questions, trajectories, haystack)
         return cls(
             data_root=root,
@@ -294,14 +293,21 @@ def validate_harness_checkout(harness_root: Path) -> None:
         )
 
 
-def _read_bytes(path: Path, label: str) -> bytes:
+def _file_digest(path: Path, label: str) -> str:
+    """Hash one input without materializing large trajectory files in memory."""
+
+    hasher = hashlib.sha256()
+    bytes_read = 0
     try:
-        payload = path.read_bytes()
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                hasher.update(chunk)
+                bytes_read += len(chunk)
     except OSError as error:
         raise LongMemEvalV2CatalogError(f"Missing LongMemEval-V2 input {label}: {path}") from error
-    if not payload.strip():
+    if bytes_read == 0:
         raise LongMemEvalV2CatalogError(f"LongMemEval-V2 input {label} is blank")
-    return payload
+    return hasher.hexdigest()
 
 
 def _validate_expected_digests(actual: Mapping[str, str], expected: Mapping[str, str] | None) -> None:
@@ -314,11 +320,10 @@ def _validate_expected_digests(actual: Mapping[str, str], expected: Mapping[str,
             raise LongMemEvalV2CatalogError(f"LongMemEval-V2 SHA-256 mismatch for {name}")
 
 
-def _questions(payload: bytes) -> tuple[dict[str, Question], tuple[str, ...]]:
-    rows = _jsonl(payload, "questions.jsonl")
+def _questions(path: Path) -> tuple[dict[str, Question], tuple[str, ...]]:
     questions: dict[str, Question] = {}
     source_order: list[str] = []
-    for index, row in enumerate(rows):
+    for index, row in enumerate(_jsonl(path, "questions.jsonl")):
         question_id = _nonblank(row.get("id"), f"question {index} id")
         if question_id in questions:
             raise LongMemEvalV2CatalogError(f"Duplicate LongMemEval-V2 question id: {question_id}")
@@ -334,10 +339,9 @@ def _questions(payload: bytes) -> tuple[dict[str, Question], tuple[str, ...]]:
     return questions, tuple(source_order)
 
 
-def _trajectories(payload: bytes) -> Mapping[str, Literal["web", "enterprise"]]:
-    rows = _jsonl(payload, "trajectories.jsonl")
+def _trajectories(path: Path) -> Mapping[str, Literal["web", "enterprise"]]:
     trajectories: dict[str, Literal["web", "enterprise"]] = {}
-    for index, row in enumerate(rows):
+    for index, row in enumerate(_jsonl(path, "trajectories.jsonl")):
         trajectory_id = _nonblank(row.get("id"), f"trajectory {index} id")
         if trajectory_id in trajectories:
             raise LongMemEvalV2CatalogError(f"Duplicate LongMemEval-V2 trajectory id: {trajectory_id}")
@@ -348,10 +352,11 @@ def _trajectories(payload: bytes) -> Mapping[str, Literal["web", "enterprise"]]:
     return MappingProxyType(trajectories)
 
 
-def _haystack(payload: bytes) -> Mapping[str, tuple[str, ...]]:
+def _haystack(path: Path) -> Mapping[str, tuple[str, ...]]:
     try:
-        value = json.loads(payload)
-    except json.JSONDecodeError as error:
+        with path.open(encoding="utf-8") as source:
+            value = json.load(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise LongMemEvalV2CatalogError("LongMemEval-V2 haystack is not valid JSON") from error
     if not isinstance(value, dict):
         raise LongMemEvalV2CatalogError("LongMemEval-V2 haystack must be a JSON object")
@@ -392,27 +397,31 @@ def _validate_haystack(
                 raise LongMemEvalV2CatalogError(f"LongMemEval-V2 haystack crosses domains for question {question_id}")
 
 
-def _jsonl(payload: bytes, label: str) -> list[dict[str, object]]:
+def _jsonl(path: Path, label: str) -> Iterator[dict[str, object]]:
+    """Parse one JSONL input incrementally to support multi-gigabyte trajectories."""
+
+    found = False
     try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise LongMemEvalV2CatalogError(f"LongMemEval-V2 input {label} is not UTF-8") from error
-    rows: list[dict[str, object]] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise LongMemEvalV2CatalogError(
-                f"LongMemEval-V2 input {label} has invalid JSON at {line_number}"
-            ) from error
-        if not isinstance(value, dict):
-            raise LongMemEvalV2CatalogError(f"LongMemEval-V2 input {label} has a non-object row at {line_number}")
-        rows.append(value)
-    if not rows:
+        with path.open(encoding="utf-8") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                found = True
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise LongMemEvalV2CatalogError(
+                        f"LongMemEval-V2 input {label} has invalid JSON at {line_number}"
+                    ) from error
+                if not isinstance(value, dict):
+                    raise LongMemEvalV2CatalogError(
+                        f"LongMemEval-V2 input {label} has a non-object row at {line_number}"
+                    )
+                yield value
+    except (OSError, UnicodeDecodeError) as error:
+        raise LongMemEvalV2CatalogError(f"Cannot read LongMemEval-V2 input {label}: {path}") from error
+    if not found:
         raise LongMemEvalV2CatalogError(f"LongMemEval-V2 input {label} is blank")
-    return rows
 
 
 def _nonblank(value: object, label: str) -> str:

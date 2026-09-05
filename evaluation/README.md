@@ -187,11 +187,11 @@ The LongMemEval-V2 command currently validates a fixed smoke subset and writes
 its preflight artifacts. It does not yet invoke a PowerContext Memory adapter,
 a Reader, or a Judge.
 
-Prepare a detached upstream checkout at the pinned harness commit, a downloaded
-LongMemEval-V2 data root, a dataset lock, and a fixed smoke manifest. The data
-files themselves stay outside this repository. The dataset lock must name the
-data revision and the SHA-256 for `questions.jsonl`, `trajectories.jsonl`, and
-the selected tier's haystack file:
+Prepare a detached upstream checkout at the pinned harness commit and download
+the matching LongMemEval-V2 data root outside this repository. The checked-in
+small-tier lock and smoke manifest fix the data revision, three core data-file
+hashes, ten source-ordered questions, all five published abilities, and both
+published domains. The dataset lock has this shape:
 
 ```json
 {
@@ -218,8 +218,8 @@ directory:
 uv run --project evaluation powercontext-eval longmemeval-v2 smoke \
   --harness-root /path/to/LongMemEval-V2 \
   --data-root /path/to/longmemeval-v2-data \
-  --dataset-lock /path/to/dataset-lock.json \
-  --smoke-manifest /path/to/smoke-v1.json \
+  --dataset-lock evaluation/locks/longmemeval-v2-small-v1.dataset-lock.json \
+  --smoke-manifest evaluation/locks/longmemeval-v2-small-v1.smoke.json \
   --output-dir /path/to/new-smoke-artifacts
 ```
 
