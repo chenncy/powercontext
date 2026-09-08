@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+import powercontext_eval.benchmarks.longmemeval_v2.catalog as longmemeval_catalog
+import powercontext_eval.benchmarks.longmemeval_v2.smoke as longmemeval_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
     RUN_INPUT_MANIFEST_SCHEMA,
     SMOKE_MANIFEST_SCHEMA,
@@ -96,7 +98,7 @@ def smoke_manifest(path: Path) -> Path:
     return path
 
 
-def dataset_lock(path: Path, root: Path) -> Path:
+def dataset_lock(path: Path, root: Path, *, harness_commit: str = UPSTREAM_HARNESS_COMMIT) -> Path:
     files = {
         "questions.jsonl": root / "questions.jsonl",
         "trajectories.jsonl": root / "trajectories.jsonl",
@@ -108,7 +110,7 @@ def dataset_lock(path: Path, root: Path) -> Path:
                 "schema": "powercontext.longmemeval-v2-dataset-lock.v1",
                 "upstream": {
                     "repository": "https://github.com/xiaowu0162/LongMemEval-V2",
-                    "harness_commit": UPSTREAM_HARNESS_COMMIT,
+                    "harness_commit": harness_commit,
                 },
                 "dataset_revision": "fixture-data-revision",
                 "tier": "small",
@@ -118,6 +120,21 @@ def dataset_lock(path: Path, root: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def harness_checkout(tmp_path: Path) -> tuple[Path, str]:
+    harness = tmp_path / "harness"
+    (harness / "evaluation").mkdir(parents=True)
+    harness_file = harness / "evaluation" / "harness.py"
+    harness_file.write_text("original = True\n", encoding="utf-8")
+    for arguments in (("init", "-q"), ("config", "user.email", "tests@example.com"), ("config", "user.name", "Tests")):
+        subprocess.run(("git", "-C", str(harness), *arguments), check=True)
+    subprocess.run(("git", "-C", str(harness), "add", "evaluation/harness.py"), check=True)
+    subprocess.run(("git", "-C", str(harness), "commit", "-qm", "fixture harness"), check=True)
+    revision = subprocess.run(
+        ("git", "-C", str(harness), "rev-parse", "HEAD"), check=True, capture_output=True, text=True
+    ).stdout.strip()
+    return harness, revision
 
 
 def test_catalog_validates_all_upstream_input_relationships(tmp_path: Path) -> None:
@@ -226,44 +243,43 @@ def test_checked_in_small_smoke_contract_is_valid() -> None:
 
 
 def test_harness_checkout_requires_the_exact_pinned_revision(monkeypatch, tmp_path: Path) -> None:
-    harness = tmp_path / "harness"
-    (harness / "evaluation").mkdir(parents=True)
-    (harness / "evaluation" / "harness.py").write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        "powercontext_eval.benchmarks.longmemeval_v2.catalog.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, f"{UPSTREAM_HARNESS_COMMIT}\n", ""),
-    )
+    harness, revision = harness_checkout(tmp_path)
+    monkeypatch.setattr(longmemeval_catalog, "UPSTREAM_HARNESS_COMMIT", revision)
 
     validate_harness_checkout(harness)
 
 
 def test_harness_checkout_rejects_a_different_revision(monkeypatch, tmp_path: Path) -> None:
-    harness = tmp_path / "harness"
-    (harness / "evaluation").mkdir(parents=True)
-    (harness / "evaluation" / "harness.py").write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        "powercontext_eval.benchmarks.longmemeval_v2.catalog.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "0" * 40 + "\n", ""),
-    )
+    harness, _revision = harness_checkout(tmp_path)
+    monkeypatch.setattr(longmemeval_catalog, "UPSTREAM_HARNESS_COMMIT", "0" * 40)
 
     with pytest.raises(LongMemEvalV2CatalogError, match="harness checkout must be"):
+        validate_harness_checkout(harness)
+
+
+@pytest.mark.parametrize("staged", (False, True))
+def test_harness_checkout_rejects_tracked_edits(monkeypatch, tmp_path: Path, staged: bool) -> None:
+    harness, revision = harness_checkout(tmp_path)
+    monkeypatch.setattr(longmemeval_catalog, "UPSTREAM_HARNESS_COMMIT", revision)
+    harness_file = harness / "evaluation" / "harness.py"
+    harness_file.write_text("modified = True\n", encoding="utf-8")
+    if staged:
+        subprocess.run(("git", "-C", str(harness), "add", "evaluation/harness.py"), check=True)
+
+    with pytest.raises(LongMemEvalV2CatalogError, match="tracked changes"):
         validate_harness_checkout(harness)
 
 
 def test_prepare_smoke_run_writes_non_overwritable_provenance(tmp_path: Path) -> None:
     root = data_root(tmp_path)
     smoke = smoke_manifest(tmp_path / "smoke.json")
-    lock = dataset_lock(tmp_path / "dataset-lock.json", root)
-    harness = tmp_path / "harness"
-    (harness / "evaluation").mkdir(parents=True)
-    (harness / "evaluation" / "harness.py").write_text("", encoding="utf-8")
+    harness, revision = harness_checkout(tmp_path)
+    lock = dataset_lock(tmp_path / "dataset-lock.json", root, harness_commit=revision)
     output = tmp_path / "run"
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        "powercontext_eval.benchmarks.longmemeval_v2.catalog.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, f"{UPSTREAM_HARNESS_COMMIT}\n", ""),
-    )
+    monkeypatch.setattr(longmemeval_catalog, "UPSTREAM_HARNESS_COMMIT", revision)
+    monkeypatch.setattr(longmemeval_smoke, "UPSTREAM_HARNESS_COMMIT", revision)
 
     try:
         prepare_smoke_run(
@@ -276,7 +292,7 @@ def test_prepare_smoke_run_writes_non_overwritable_provenance(tmp_path: Path) ->
         manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["schema"] == RUN_INPUT_MANIFEST_SCHEMA
         assert manifest["classification"] == "smoke-subset"
-        assert manifest["upstream"]["harness_commit"] == UPSTREAM_HARNESS_COMMIT
+        assert manifest["upstream"]["harness_commit"] == revision
         assert manifest["dataset"]["revision"] == "fixture-data-revision"
         assert manifest["dataset_lock"]["content_sha256"] == hashlib.sha256(lock.read_bytes()).hexdigest()
         assert manifest["smoke_manifest"]["content_sha256"] == hashlib.sha256(smoke.read_bytes()).hexdigest()

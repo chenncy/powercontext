@@ -269,14 +269,24 @@ def load_dataset_lock(path: Path) -> DatasetLock:
 
 
 def validate_harness_checkout(harness_root: Path) -> None:
-    """Require the configured upstream checkout to be exactly the pinned harness commit."""
+    """Require a pinned, clean upstream checkout before recording its identity."""
 
     harness = harness_root.resolve()
     if not (harness / "evaluation" / "harness.py").is_file():
         raise LongMemEvalV2CatalogError(f"LongMemEval-V2 harness is missing evaluation/harness.py: {harness}")
+    revision = _harness_git(harness, "rev-parse", "HEAD").stdout.strip()
+    if revision != UPSTREAM_HARNESS_COMMIT:
+        raise LongMemEvalV2CatalogError(
+            f"LongMemEval-V2 harness checkout must be {UPSTREAM_HARNESS_COMMIT}, got {revision or 'unknown'}"
+        )
+    if _harness_git(harness, "diff", "--quiet", "HEAD", "--").returncode != 0:
+        raise LongMemEvalV2CatalogError("LongMemEval-V2 harness checkout has tracked changes relative to HEAD")
+
+
+def _harness_git(harness: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(harness), "rev-parse", "HEAD"],
+        return subprocess.run(
+            ["git", "-C", str(harness), *arguments],
             check=False,
             capture_output=True,
             text=True,
@@ -286,11 +296,6 @@ def validate_harness_checkout(harness_root: Path) -> None:
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise LongMemEvalV2CatalogError(f"Cannot inspect LongMemEval-V2 harness checkout: {harness}") from error
-    revision = completed.stdout.strip()
-    if completed.returncode != 0 or revision != UPSTREAM_HARNESS_COMMIT:
-        raise LongMemEvalV2CatalogError(
-            f"LongMemEval-V2 harness checkout must be {UPSTREAM_HARNESS_COMMIT}, got {revision or 'unknown'}"
-        )
 
 
 def _file_digest(path: Path, label: str) -> str:
