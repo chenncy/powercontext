@@ -259,12 +259,40 @@ audit artifact path. Credentials are resolved only from `token_env` at runtime:
 ```
 
 Each trajectory chunk is captured through the public Content Source endpoint
-and explicitly remembered through the public Memory endpoint. The adapter audit
-correlates the returned Source reference and Memory citation; it does not claim
-that this correlation is native Memory lineage. Queries use the public Memory
-search endpoint and return upstream-compatible text context items. Query images
-are neither read nor sent because the current Memory search contract is text
-only.
+and one deterministic bounded projection per trajectory is explicitly
+remembered through the public Memory endpoint. The projection keeps goal,
+outcome, URL, action, thought, and bounded observation evidence without calling
+a model. The adapter audit correlates the returned Source references and Memory
+citation; it does not claim that this correlation is native Memory lineage.
+Queries use the public Memory search endpoint and return upstream-compatible
+text context items. Query images are neither read nor sent because the current
+Memory search contract is text only.
+
+With a ready PowerContext Server, run the fixed ten-question retrieval-only
+smoke workload without a Reader, Judge, model credential, or scoring step:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 retrieval-smoke \
+  --harness-root /path/to/LongMemEval-V2 \
+  --data-root /path/to/longmemeval-v2-data \
+  --dataset-lock evaluation/locks/longmemeval-v2-small-v1.dataset-lock.json \
+  --smoke-manifest evaluation/locks/longmemeval-v2-small-v1.smoke.json \
+  --base-url http://127.0.0.1:8000 \
+  --run-id retrieval-smoke-001 \
+  --powercontext-revision POWERCONTEXT_GIT_SHA \
+  --integration-revision INTEGRATION_GIT_SHA \
+  --output-dir /path/to/new-retrieval-smoke-artifacts
+```
+
+The runner verifies the locked input digests while streaming
+`trajectories.jsonl`, retains only one trajectory object at a time, and creates
+one isolated child Scope for each distinct ordered haystack. Identical
+haystacks reuse their ingestion, while different haystacks cannot retrieve each
+other's Memory. It writes `retrieval-manifest.json`,
+`retrieval-results.jsonl`, `adapter-audit.jsonl`, `failures.jsonl`, and
+`summary.json` beside the preflight `manifest.json` and `subset.json`. Accuracy,
+Reader, and Judge fields remain null because retrieval-only output is not a
+benchmark score.
 
 ## Configuration files
 

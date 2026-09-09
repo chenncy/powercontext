@@ -172,10 +172,11 @@ def test_bootstrap_registers_adapter_and_runs_harness_insert_query_chain(
     assert fake.searches == [
         {"scope_id": "smoke-scope", "query": "Which assignment group should be used?", "limit": 10, "mode": "auto"}
     ]
-    assert json.loads(output_path.read_text(encoding="utf-8")) == {
-        "context": [{"type": "text", "value": "The remembered assignment procedure."}],
-        "post_query": None,
-    }
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+    assert output["context"] == [{"type": "text", "value": "The remembered assignment procedure."}]
+    assert output["post_query"]["query_invocation_id"] == "invocation-1"
+    assert output["post_query"]["result_count"] == 1
+    assert output["post_query"]["citations"][0]["entry_id"] == "entry-1"
     audit_text = audit_path.read_text(encoding="utf-8")
     audit = [json.loads(line) for line in audit_text.splitlines()]
     assert [event["operation"] for event in audit] == ["ingest", "query"]

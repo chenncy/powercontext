@@ -22,6 +22,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
@@ -32,7 +33,8 @@ from urllib.request import Request, urlopen
 
 AUDIT_SCHEMA = "powercontext.longmemeval-v2-memory-audit.v1"
 DEFAULT_MEMORY_KIND = "longmemeval_v2_trajectory"
-DEFAULT_SOURCE_CHUNK_BYTES = 7_500
+DEFAULT_SOURCE_CHUNK_BYTES = 180_000
+MAX_SOURCE_CHUNK_BYTES = 190_000
 MAX_MEMORY_TEXT_BYTES = 8_192
 _HARNESS_RUNTIME_KEYS = {
     "cancel_event",
@@ -87,6 +89,15 @@ class PowerContextHTTPRuntime:
     def search_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]:
         return self._post("/v1/memory/search", payload, expected_status=200)
 
+    def create_scope(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        return self._post("/v1/scopes", payload, expected_status=201)
+
+    def get_readiness(self) -> Mapping[str, object]:
+        return self._get("/health/ready", expected_status=200)
+
+    def get_capabilities(self) -> Mapping[str, object]:
+        return self._get("/v1/capabilities", expected_status=200)
+
     def _post(
         self,
         path: str,
@@ -103,6 +114,14 @@ class PowerContextHTTPRuntime:
             headers=headers,
             method="POST",
         )
+        return self._request(request, path=path, expected_status=expected_status)
+
+    def _get(self, path: str, *, expected_status: int) -> Mapping[str, object]:
+        headers = {} if self._token is None else {"Authorization": f"Bearer {self._token}"}
+        request = Request(f"{self._base_url}{path}", headers=headers, method="GET")
+        return self._request(request, path=path, expected_status=expected_status)
+
+    def _request(self, request: Request, *, path: str, expected_status: int) -> Mapping[str, object]:
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:
                 status = response.status
@@ -150,7 +169,7 @@ class PowerContextMemory:
             self.memory_params.get("source_chunk_bytes", DEFAULT_SOURCE_CHUNK_BYTES),
             "source_chunk_bytes",
             minimum=512,
-            maximum=MAX_MEMORY_TEXT_BYTES,
+            maximum=MAX_SOURCE_CHUNK_BYTES,
         )
         self._runtime: PowerContextRuntime = self._http_runtime()
         self._clock_ns: Callable[[], int] = time.perf_counter_ns
@@ -186,19 +205,21 @@ class PowerContextMemory:
         """Capture one projected trajectory as paired Source and Memory chunks."""
 
         trajectory_id, projected = _project_trajectory(trajectory)
-        chunks = _utf8_chunks(projected, self.source_chunk_bytes)
+        source_chunks = _utf8_chunks(projected, self.source_chunk_bytes)
+        memory_text = _compact_memory_text(projected)
         digest = f"sha256:{hashlib.sha256(projected.encode()).hexdigest()}"
         started = self._clock_ns()
         capture_ns = 0
         remember_ns = 0
-        citations: list[dict[str, object]] = []
+        source_refs: list[dict[str, object]] = []
+        memory_citations: list[dict[str, object]] = []
         status = "failed"
         failure: str | None = None
         try:
             with self._insert_lock:
                 if trajectory_id in self._inserted_trajectory_ids:
                     raise PowerContextMemoryAdapterError(f"duplicate trajectory insert: {trajectory_id}")
-                for index, content in enumerate(chunks):
+                for index, content in enumerate(source_chunks):
                     source_id = f"longmemeval-v2-{trajectory_id}-{index + 1:04d}"
                     stage_started = self._clock_ns()
                     source = self._runtime.capture_content_source(
@@ -210,25 +231,25 @@ class PowerContextMemory:
                                 "benchmark": "longmemeval-v2",
                                 "trajectory_id": trajectory_id,
                                 "chunk_index": index,
-                                "chunk_count": len(chunks),
+                                "chunk_count": len(source_chunks),
                                 "trajectory_digest": digest,
                             },
                         }
                     )
                     capture_ns += self._clock_ns() - stage_started
-                    source_ref = _source_ref(source)
+                    source_refs.append(_source_ref(source))
 
-                    stage_started = self._clock_ns()
-                    memory = self._runtime.remember_memory(
-                        {
-                            "scope_id": self.scope_id,
-                            "kind": self.memory_kind,
-                            "text": content,
-                            "reason": f"LongMemEval-V2 trajectory {trajectory_id} chunk {index + 1}/{len(chunks)}",
-                        }
-                    )
-                    remember_ns += self._clock_ns() - stage_started
-                    citations.append({"source_ref": source_ref, "memory_citation": _memory_citation(memory)})
+                stage_started = self._clock_ns()
+                memory = self._runtime.remember_memory(
+                    {
+                        "scope_id": self.scope_id,
+                        "kind": self.memory_kind,
+                        "text": memory_text,
+                        "reason": f"LongMemEval-V2 deterministic compact memory for trajectory {trajectory_id}",
+                    }
+                )
+                remember_ns += self._clock_ns() - stage_started
+                memory_citations.append(_memory_citation(memory))
                 self._inserted_trajectory_ids.add(trajectory_id)
             status = "succeeded"
         except Exception as error:
@@ -242,8 +263,10 @@ class PowerContextMemory:
                     "scope_id": self.scope_id,
                     "trajectory_id": trajectory_id,
                     "trajectory_digest": digest,
-                    "chunk_count": len(chunks),
-                    "citations": citations,
+                    "source_chunk_count": len(source_chunks),
+                    "memory_entry_count": len(memory_citations),
+                    "source_refs": source_refs,
+                    "memory_citations": memory_citations,
                     "timings_ms": {
                         "source_capture": _milliseconds(capture_ns),
                         "memory_remember": _milliseconds(remember_ns),
@@ -299,21 +322,29 @@ class PowerContextMemory:
             failure = type(error).__name__
             raise
         finally:
+            query_invocation_id = self.get_query_context().get("query_invocation_id")
+            timings = {
+                "search": _milliseconds(search_ns),
+                "format": _milliseconds(format_ns),
+                "total": _milliseconds(self._clock_ns() - started),
+            }
+            self._query_context_local.last_query_metadata = {
+                "query_invocation_id": query_invocation_id,
+                "result_count": len(items),
+                "citations": deepcopy(citations),
+                "timings_ms": dict(timings),
+            }
             self._write_audit(
                 {
                     "operation": "query",
                     "status": status,
                     "scope_id": self.scope_id,
-                    "query_invocation_id": self.get_query_context().get("query_invocation_id"),
+                    "query_invocation_id": query_invocation_id,
                     "query_sha256": hashlib.sha256(question.encode()).hexdigest(),
                     "query_image_present": query_image is not None,
                     "result_count": len(items),
                     "citations": citations,
-                    "timings_ms": {
-                        "search": _milliseconds(search_ns),
-                        "format": _milliseconds(format_ns),
-                        "total": _milliseconds(self._clock_ns() - started),
-                    },
+                    "timings_ms": timings,
                     "failure_type": failure,
                 }
             )
@@ -325,6 +356,10 @@ class PowerContextMemory:
     def clear_query_context(self) -> None:
         if hasattr(self._query_context_local, "context"):
             delattr(self._query_context_local, "context")
+        if hasattr(self._query_context_local, "last_query_metadata"):
+            delattr(self._query_context_local, "last_query_metadata")
+        if hasattr(self._query_context_local, "last_query_metadata"):
+            delattr(self._query_context_local, "last_query_metadata")
 
     def get_query_context(self) -> dict[str, str]:
         context = getattr(self._query_context_local, "context", None)
@@ -336,8 +371,9 @@ class PowerContextMemory:
         query: str,
         query_image: str | None,
         memory_context: list[dict[str, str]],
-    ) -> None:
-        return None
+    ) -> dict[str, object] | None:
+        metadata = getattr(self._query_context_local, "last_query_metadata", None)
+        return deepcopy(metadata) if isinstance(metadata, dict) else None
 
     def _http_runtime(self) -> PowerContextHTTPRuntime:
         base_url = _optional_nonblank(self.memory_params.get("base_url"), "base_url", "http://127.0.0.1:8765")
@@ -403,6 +439,82 @@ def _utf8_chunks(text: str, maximum_bytes: int) -> list[str]:
         chunks.append(chunk)
         offset = end
     return chunks
+
+
+def _compact_memory_text(projected: str) -> str:
+    value = json.loads(projected)
+    if not isinstance(value, dict):
+        raise PowerContextMemoryAdapterError("projected trajectory must be an object")
+    lines = [
+        "LongMemEval-V2 deterministic trajectory memory",
+        f"trajectory_id: {_plain(value.get('id'))}",
+        f"domain: {_plain(value.get('domain'))}",
+        f"environment: {_plain(value.get('environment'))}",
+        f"goal: {_bounded(value.get('goal'), 1_000)}",
+        f"outcome: {_plain(value.get('outcome'))}",
+        f"start_url: {_bounded(value.get('start_url'), 500)}",
+    ]
+    states = value.get("states")
+    if isinstance(states, list):
+        for index, state in enumerate(states):
+            if not isinstance(state, Mapping):
+                continue
+            lines.extend(
+                [
+                    f"state {index} url: {_bounded(state.get('url'), 300)}",
+                    f"state {index} action: {_bounded(state.get('action'), 600)}",
+                    f"state {index} thought: {_bounded(state.get('thought'), 600)}",
+                    f"state {index} observation: {_bounded(state.get('accessibility_tree'), 600)}",
+                ]
+            )
+    return _truncate_utf8_middle("\n".join(lines), MAX_MEMORY_TEXT_BYTES)
+
+
+def _plain(value: object) -> str:
+    return value if isinstance(value, str) and value else "<none>"
+
+
+def _bounded(value: object, maximum_chars: int) -> str:
+    text = _plain(value).replace("\x00", " ")
+    if len(text) <= maximum_chars:
+        return text
+    head = maximum_chars // 2
+    tail = maximum_chars - head
+    return f"{text[:head]}…{text[-tail:]}"
+
+
+def _truncate_utf8_middle(text: str, maximum_bytes: int) -> str:
+    encoded = text.encode()
+    if len(encoded) <= maximum_bytes:
+        return text
+    marker = "\n… <middle omitted by deterministic no-model projection> …\n"
+    marker_bytes = marker.encode()
+    budget = maximum_bytes - len(marker_bytes)
+    head = _utf8_prefix(encoded, budget // 2)
+    tail = _utf8_suffix(encoded, budget - len(head))
+    return head.decode() + marker + tail.decode()
+
+
+def _utf8_prefix(value: bytes, maximum_bytes: int) -> bytes:
+    end = min(len(value), maximum_bytes)
+    while end > 0:
+        try:
+            value[:end].decode()
+            return value[:end]
+        except UnicodeDecodeError:
+            end -= 1
+    return b""
+
+
+def _utf8_suffix(value: bytes, maximum_bytes: int) -> bytes:
+    start = max(0, len(value) - maximum_bytes)
+    while start < len(value):
+        try:
+            value[start:].decode()
+            return value[start:]
+        except UnicodeDecodeError:
+            start += 1
+    return b""
 
 
 def _source_ref(response: Mapping[str, object]) -> dict[str, object]:

@@ -32,17 +32,17 @@ from urllib.request import Request, urlopen
 import typer
 from pydantic import ValidationError
 
+from powercontext_eval.benchmarks.longmemeval_v2.adapter import PowerContextMemoryAdapterError
 from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
+    LongMemEvalV2CatalogError,
     LongMemEvalV2EnvironmentError,
     LongMemEvalV2InputError,
 )
+from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import prepare_smoke_run
 from powercontext_eval.benchmarks.swebench_pro.catalog import PUBLIC_V2_TASK_SET, SweBenchProCatalog, TaskSet
 from powercontext_eval.codex import DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT
 from powercontext_eval.models import TreatmentMode
-from powercontext_eval.powercontext_sut import DEFAULT_DOCKER_NETWORK_POOL, run_codex_contract_smoke
-from powercontext_eval.runner import RunConfig, run_swebench_pro_instance
-from powercontext_eval.web.batches import BatchCreate
 
 if TYPE_CHECKING:
     from powercontext_eval.web.config import WebConfig
@@ -52,6 +52,7 @@ swebench_pro_app = typer.Typer(no_args_is_help=True, help="Pinned SWE-bench Pro 
 longmemeval_v2_app = typer.Typer(no_args_is_help=True, help="Pinned LongMemEval-V2 evaluation.")
 app.add_typer(swebench_pro_app, name="swebench-pro")
 app.add_typer(longmemeval_v2_app, name="longmemeval-v2")
+DEFAULT_DOCKER_NETWORK_POOL = "172.30.0.0/15"
 
 
 @app.callback()
@@ -61,6 +62,22 @@ def root() -> None:
 
 class _Stoppable(Protocol):
     def stop(self) -> None: ...
+
+
+def run_codex_contract_smoke(**kwargs: Any) -> Any:
+    """Load the platform-specific contract runner only when its command is used."""
+
+    from powercontext_eval.powercontext_sut import run_codex_contract_smoke as implementation
+
+    return implementation(**kwargs)
+
+
+def run_swebench_pro_instance(*args: Any, **kwargs: Any) -> Any:
+    """Load the platform-specific SWE-bench runner only when its command is used."""
+
+    from powercontext_eval.runner import run_swebench_pro_instance as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def _request_worker_stop(worker: _Stoppable, _signum: int, _frame: FrameType | None) -> None:
@@ -212,6 +229,56 @@ def longmemeval_v2_smoke(
     )
 
 
+@longmemeval_v2_app.command("retrieval-smoke")
+def longmemeval_v2_retrieval_smoke(
+    data_root: Annotated[Path, typer.Option("--data-root")],
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    harness_root: Annotated[Path, typer.Option("--harness-root")],
+    smoke_manifest: Annotated[Path, typer.Option("--smoke-manifest")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    powercontext_revision: Annotated[str, typer.Option("--powercontext-revision")],
+    integration_revision: Annotated[str, typer.Option("--integration-revision")],
+    base_url: Annotated[str, typer.Option("--base-url")] = "http://127.0.0.1:8000",
+    token_env: Annotated[str, typer.Option("--token-env")] = "POWERCONTEXT_TOKEN",
+    search_mode: Annotated[str, typer.Option("--search-mode")] = "fts",
+    search_limit: Annotated[int, typer.Option("--search-limit", min=1, max=50)] = 10,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=0.1)] = 30.0,
+) -> None:
+    """Run the fixed LongMemEval-V2 subset through Memory retrieval without a model."""
+
+    try:
+        result = run_retrieval_smoke(
+            data_root=data_root,
+            dataset_lock=dataset_lock,
+            harness_root=harness_root,
+            smoke_manifest=smoke_manifest,
+            output_dir=output_dir,
+            run_id=run_id,
+            powercontext_revision=powercontext_revision,
+            integration_revision=integration_revision,
+            base_url=base_url,
+            token_env=token_env,
+            search_mode=search_mode,
+            search_limit=search_limit,
+            timeout_seconds=timeout_seconds,
+        )
+    except (LongMemEvalV2CatalogError, RetrievalSmokeError, PowerContextMemoryAdapterError) as error:
+        raise typer.BadParameter(str(error)) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset-retrieval-only",
+                "manifest": str(result.manifest_path),
+                "results": str(result.results_path),
+                "summary": str(result.summary_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
 @swebench_pro_app.command("run")
 def swebench_pro_run(
     root_path: str = typer.Option(..., "--root"),
@@ -237,6 +304,8 @@ def swebench_pro_run(
     run_id: str | None = typer.Option(None),
 ) -> None:
     """Run Gold, PowerContext OFF/ON, official grading, and report generation."""
+
+    from powercontext_eval.runner import RunConfig
 
     root = Path(root_path)
     harness = Path(harness_root) if harness_root is not None else root / "cache" / "swebench-pro.git"
@@ -307,6 +376,8 @@ def swebench_pro_create_batch(
     start_paused: bool = typer.Option(False, "--start-paused/--start-running"),
 ) -> None:
     """Create one full batch through the console API, optionally atomically paused."""
+
+    from powercontext_eval.web.batches import BatchCreate
 
     endpoint = _batch_api_endpoint(console_url)
     try:

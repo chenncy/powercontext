@@ -133,15 +133,17 @@ def test_insert_uses_public_source_and_memory_operations_with_utf8_safe_chunks(t
 
     memory.insert(trajectory())
 
-    assert len(runtime.captures) == len(runtime.memories) > 1
+    assert len(runtime.captures) > 1
+    assert len(runtime.memories) == 1
     assert all(request["scope_id"] == "benchmark-run" for request in runtime.captures)
     assert all(len(str(request["content"]).encode()) <= 512 for request in runtime.captures)
-    assert [request["content"] for request in runtime.captures] == [request["text"] for request in runtime.memories]
     restored = "".join(str(request["content"]) for request in runtime.captures)
     projected = json.loads(restored)
     assert set(projected) == {"id", "domain", "environment", "goal", "outcome", "start_url", "states"}
     assert "question_type" not in restored
     assert "gold_answer" not in restored
+    assert len(str(runtime.memories[0]["text"]).encode()) <= 8192
+    assert "Assign an incident" in str(runtime.memories[0]["text"])
 
     [event] = audit_events(tmp_path)
     assert event["schema"] == AUDIT_SCHEMA
@@ -149,8 +151,10 @@ def test_insert_uses_public_source_and_memory_operations_with_utf8_safe_chunks(t
     assert event["status"] == "succeeded"
     assert event["scope_id"] == "benchmark-run"
     assert isinstance(event["observed_at"], str)
-    assert event["chunk_count"] == len(runtime.captures)
-    assert len(event["citations"]) == len(runtime.captures)
+    assert event["source_chunk_count"] == len(runtime.captures)
+    assert event["memory_entry_count"] == 1
+    assert len(event["source_refs"]) == len(runtime.captures)
+    assert len(event["memory_citations"]) == 1
     assert set(event["timings_ms"]) == {"source_capture", "memory_remember", "total"}
 
 
@@ -160,6 +164,11 @@ def test_query_returns_upstream_text_items_and_records_citations(tmp_path: Path)
     memory.set_query_context(query_invocation_id="query-7")
 
     result = memory.query("Which assignment group should I use?", "question.png")
+    metadata = memory.post_query_hook(
+        query="Which assignment group should I use?",
+        query_image="question.png",
+        memory_context=result,
+    )
 
     assert result == [{"type": "text", "value": "Use the Network assignment group."}]
     assert runtime.searches == [
@@ -177,6 +186,12 @@ def test_query_returns_upstream_text_items_and_records_citations(tmp_path: Path)
     assert event["citations"][0]["entry_id"] == "entry-2"
     assert "question.png" not in json.dumps(event)
     assert set(event["timings_ms"]) == {"search", "format", "total"}
+    assert metadata == {
+        "query_invocation_id": "query-7",
+        "result_count": 1,
+        "citations": event["citations"],
+        "timings_ms": event["timings_ms"],
+    }
 
 
 def test_failed_query_is_audited_without_question_or_image_content(tmp_path: Path) -> None:
@@ -213,9 +228,7 @@ def test_duplicate_insert_fails_closed_and_records_the_attempt(tmp_path: Path) -
 def test_partial_ingest_failure_preserves_completed_chunk_citations(tmp_path: Path) -> None:
     class PartiallyFailingRuntime(FakeRuntime):
         def remember_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]:
-            if len(self.memories) == 1:
-                raise PowerContextMemoryAdapterError("memory unavailable")
-            return super().remember_memory(payload)
+            raise PowerContextMemoryAdapterError("memory unavailable")
 
     runtime = PartiallyFailingRuntime()
     memory = adapter(tmp_path, runtime, source_chunk_bytes=512)
@@ -225,8 +238,8 @@ def test_partial_ingest_failure_preserves_completed_chunk_citations(tmp_path: Pa
 
     [event] = audit_events(tmp_path)
     assert event["status"] == "failed"
-    assert len(event["citations"]) == 1
-    assert len(runtime.captures) == 2
+    assert len(event["source_refs"]) == len(runtime.captures) > 1
+    assert event["memory_citations"] == []
 
 
 def test_http_runtime_rejects_credentials_and_plaintext_remote_hosts() -> None:
