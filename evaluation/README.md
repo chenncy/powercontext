@@ -183,9 +183,10 @@ uv run --project evaluation powercontext-eval swebench-pro create-batch \
 
 ## LongMemEval-V2 smoke input validation
 
-The LongMemEval-V2 command currently validates a fixed smoke subset and writes
-its preflight artifacts. It does not yet invoke a PowerContext Memory adapter,
-a Reader, or a Judge.
+The LongMemEval-V2 command validates a fixed smoke subset and writes its
+preflight artifacts. The PowerContext Memory adapter and pinned-harness
+bootstrap are available separately; this workload does not yet provide a
+Reader, Judge, scoring runner, or full-run workflow.
 
 Prepare a detached upstream checkout at the pinned harness commit and download
 the matching LongMemEval-V2 data root outside this repository. The checked-in
@@ -226,6 +227,44 @@ uv run --project evaluation powercontext-eval longmemeval-v2 smoke \
 The command refuses a harness checkout at a different commit, mismatched input
 hashes, invalid or incomplete smoke coverage, and an existing output directory.
 It writes `manifest.json` and `subset.json`, both labelled as a smoke subset.
+
+### PowerContext Memory adapter bootstrap
+
+Run the bootstrap with a Python environment containing the pinned upstream
+harness dependencies. It validates the clean harness commit, registers
+`memory_type: powercontext` in memory, and then forwards all remaining arguments
+to the unchanged upstream harness:
+
+```bash
+python evaluation/scripts/run_longmemeval_v2_harness.py \
+  --harness-root /path/to/LongMemEval-V2 \
+  -- <upstream harness arguments>
+```
+
+The adapter memory configuration requires a dedicated evaluation Scope and
+audit artifact path. Credentials are resolved only from `token_env` at runtime:
+
+```json
+{
+  "memory_type": "powercontext",
+  "memory_params": {
+    "scope_id": "longmemeval-v2-smoke-run-id",
+    "audit_path": "/path/to/run/context/powercontext-memory.jsonl",
+    "base_url": "http://127.0.0.1:8765",
+    "token_env": "POWERCONTEXT_TOKEN",
+    "search_mode": "auto",
+    "search_limit": 10
+  }
+}
+```
+
+Each trajectory chunk is captured through the public Content Source endpoint
+and explicitly remembered through the public Memory endpoint. The adapter audit
+correlates the returned Source reference and Memory citation; it does not claim
+that this correlation is native Memory lineage. Queries use the public Memory
+search endpoint and return upstream-compatible text context items. Query images
+are neither read nor sent because the current Memory search contract is text
+only.
 
 ## Configuration files
 
