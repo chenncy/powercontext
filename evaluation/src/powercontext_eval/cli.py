@@ -32,7 +32,10 @@ from urllib.request import Request, urlopen
 import typer
 from pydantic import ValidationError
 
-from powercontext_eval.benchmarks.longmemeval_v2.catalog import LongMemEvalV2CatalogError
+from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
+    LongMemEvalV2EnvironmentError,
+    LongMemEvalV2InputError,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import prepare_smoke_run
 from powercontext_eval.benchmarks.swebench_pro.catalog import PUBLIC_V2_TASK_SET, SweBenchProCatalog, TaskSet
 from powercontext_eval.codex import DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT
@@ -175,11 +178,11 @@ def codex_contract_smoke(
 
 @longmemeval_v2_app.command("smoke")
 def longmemeval_v2_smoke(
-    data_root: Path = typer.Option(..., "--data-root"),
-    dataset_lock: Path = typer.Option(..., "--dataset-lock"),
-    harness_root: Path = typer.Option(..., "--harness-root"),
-    smoke_manifest: Path = typer.Option(..., "--smoke-manifest"),
-    output_dir: Path = typer.Option(..., "--output-dir"),
+    data_root: Annotated[Path, typer.Option("--data-root")],
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    harness_root: Annotated[Path, typer.Option("--harness-root")],
+    smoke_manifest: Annotated[Path, typer.Option("--smoke-manifest")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
 ) -> None:
     """Validate fixed LongMemEval-V2 inputs and write smoke artifacts without calling a model."""
 
@@ -191,8 +194,11 @@ def longmemeval_v2_smoke(
             smoke_manifest=smoke_manifest,
             output_dir=output_dir,
         )
-    except LongMemEvalV2CatalogError as error:
+    except LongMemEvalV2InputError as error:
         raise typer.BadParameter(str(error)) from None
+    except LongMemEvalV2EnvironmentError as error:
+        typer.echo(f"LongMemEval-V2 smoke failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
     typer.echo(
         json.dumps(
             {
@@ -296,7 +302,7 @@ def swebench_pro_create_batch(
     powercontext_ref: str = typer.Option("latest", "--powercontext-ref"),
     task_set: str = typer.Option(PUBLIC_V2_TASK_SET, "--task-set"),
     model: str = typer.Option(DEFAULT_CODEX_MODEL, "--model"),
-    treatment_mode: TreatmentMode = typer.Option(TreatmentMode.OFF_ON, "--treatment-mode"),
+    treatment_mode: Annotated[TreatmentMode, typer.Option("--treatment-mode")] = TreatmentMode.OFF_ON,
     usage_pause_percent: int = typer.Option(80, "--usage-pause-percent", min=1, max=100),
     start_paused: bool = typer.Option(False, "--start-paused/--start-running"),
 ) -> None:
