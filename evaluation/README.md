@@ -294,6 +294,27 @@ other's Memory. It writes `retrieval-manifest.json`,
 Reader, and Judge fields remain null because retrieval-only output is not a
 benchmark score.
 
+Prepare bounded, replayable Reader inputs without calling a Reader. This command
+uses the pinned upstream harness to count and truncate Memory context, and
+requires an immutable Hugging Face processor revision rather than resolving the
+processor from a moving branch:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 prepare-smoke \
+  --retrieval-dir /path/to/retrieval-smoke-artifacts \
+  --harness-root /path/to/LongMemEval-V2 \
+  --harness-python /path/to/longmemeval-harness-python \
+  --processor-revision PROCESSOR_GIT_SHA \
+  --memory-context-max-tokens 200000 \
+  --output-dir /path/to/new-prepared-prompt-artifacts
+```
+
+It writes `prepare-manifest.json`, `prepared-prompts.jsonl`,
+`prepare-failures.jsonl`, and `prepare-summary.json`. Each prepared prompt
+records the original and bounded Context token counts, the bounded Context
+bytes, final system/user messages, a prompt SHA-256, and prepare latency. This
+is still a no-model stage: Reader, Judge, and accuracy remain absent.
+
 ## Configuration files
 
 Only the environment file configures the evaluation platform. The other files either belong to Codex or are

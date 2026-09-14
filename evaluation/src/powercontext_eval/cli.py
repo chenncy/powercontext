@@ -38,6 +38,11 @@ from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
     LongMemEvalV2EnvironmentError,
     LongMemEvalV2InputError,
 )
+from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import (
+    DEFAULT_PROCESSOR_MODEL,
+    PrepareSmokeError,
+    prepare_reader_inputs_smoke,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import prepare_smoke_run
 from powercontext_eval.benchmarks.swebench_pro.catalog import PUBLIC_V2_TASK_SET, SweBenchProCatalog, TaskSet
@@ -271,6 +276,45 @@ def longmemeval_v2_retrieval_smoke(
                 "classification": "smoke-subset-retrieval-only",
                 "manifest": str(result.manifest_path),
                 "results": str(result.results_path),
+                "summary": str(result.summary_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@longmemeval_v2_app.command("prepare-smoke")
+def longmemeval_v2_prepare_smoke(
+    retrieval_dir: Annotated[Path, typer.Option("--retrieval-dir")],
+    harness_root: Annotated[Path, typer.Option("--harness-root")],
+    harness_python: Annotated[Path, typer.Option("--harness-python")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
+    processor_revision: Annotated[str, typer.Option("--processor-revision")],
+    processor_model: Annotated[str, typer.Option("--processor-model")] = DEFAULT_PROCESSOR_MODEL,
+    memory_context_max_tokens: Annotated[int, typer.Option("--memory-context-max-tokens", min=1)] = 200_000,
+) -> None:
+    """Build pinned, bounded Reader inputs from retrieval-only smoke artifacts."""
+
+    try:
+        result = prepare_reader_inputs_smoke(
+            retrieval_dir=retrieval_dir,
+            harness_root=harness_root,
+            harness_python=harness_python,
+            output_dir=output_dir,
+            processor_model=processor_model,
+            processor_revision=processor_revision,
+            memory_context_max_tokens=memory_context_max_tokens,
+        )
+    except PrepareSmokeError as error:
+        typer.echo(f"LongMemEval-V2 prompt preparation failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset-prepare-only",
+                "manifest": str(result.manifest_path),
+                "prompts": str(result.prompts_path),
                 "summary": str(result.summary_path),
             },
             ensure_ascii=False,

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeRun
 from powercontext_eval.cli import app
 
@@ -80,5 +81,55 @@ def test_longmemeval_v2_retrieval_smoke_runs_without_reader_or_judge(
             "search_mode": "fts",
             "search_limit": 10,
             "timeout_seconds": 30.0,
+        }
+    ]
+
+
+def test_longmemeval_v2_prepare_smoke_runs_without_reader_or_judge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def prepare(**kwargs: object) -> PreparedPromptRun:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return PreparedPromptRun(
+            output_dir=output,
+            manifest_path=output / "prepare-manifest.json",
+            prompts_path=output / "prepared-prompts.jsonl",
+            failures_path=output / "prepare-failures.jsonl",
+            summary_path=output / "prepare-summary.json",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.prepare_reader_inputs_smoke", prepare)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "prepare-smoke",
+            "--retrieval-dir",
+            "/retrieval",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--output-dir",
+            "/output",
+            "--processor-revision",
+            "processor-sha",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"classification": "smoke-subset-prepare-only"' in result.output
+    assert calls == [
+        {
+            "retrieval_dir": Path("/retrieval"),
+            "harness_root": Path("/harness"),
+            "harness_python": Path("/harness/python"),
+            "output_dir": Path("/output"),
+            "processor_model": "Qwen/Qwen3.5-9B",
+            "processor_revision": "processor-sha",
+            "memory_context_max_tokens": 200_000,
         }
     ]
