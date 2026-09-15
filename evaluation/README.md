@@ -315,6 +315,27 @@ records the original and bounded Context token counts, the bounded Context
 bytes, final system/user messages, a prompt SHA-256, and prepare latency. This
 is still a no-model stage: Reader, Judge, and accuracy remain absent.
 
+Run an Anthropic-compatible Reader or DeepSeek's direct OpenAI-compatible API
+over prepared prompts. Credentials are read only from the named process
+environment variable and are never written to the run artifacts:
+
+```bash
+export DEEPSEEK_API_KEY=YOUR_KEY
+uv run --project evaluation powercontext-eval longmemeval-v2 reader-smoke \
+  --prepared-dir /path/to/prepared-prompt-artifacts \
+  --provider deepseek-openai \
+  --model deepseek-flash \
+  --token-env DEEPSEEK_API_KEY \
+  --max-tokens 512 \
+  --temperature 0 \
+  --output-dir /path/to/new-reader-artifacts
+```
+
+The Reader writes `reader-manifest.json`, `reader-outputs.jsonl`,
+`reader-failures.jsonl`, and `reader-summary.json`. It records provider usage
+returned by the API but does not score answers. Keep OpenTelemetry variables
+out of this command when prompt telemetry is not approved.
+
 ## Configuration files
 
 Only the environment file configures the evaluation platform. The other files either belong to Codex or are

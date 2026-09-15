@@ -171,9 +171,11 @@ def test_longmemeval_v2_reader_smoke_uses_environment_reference_without_secret(
         {
             "prepared_dir": Path("/prepared"),
             "output_dir": Path("/output"),
-            "model": "deepseek-flash-latest",
+            "provider": "anthropic-compatible",
+            "model": None,
+            "base_url": None,
             "base_url_env": "ANTHROPIC_BASE_URL",
-            "token_env": "ANTHROPIC_AUTH_TOKEN",
+            "token_env": None,
             "max_tokens": 512,
             "temperature": 0.0,
             "timeout_seconds": 120.0,

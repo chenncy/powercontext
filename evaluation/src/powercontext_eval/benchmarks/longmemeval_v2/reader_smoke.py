@@ -34,6 +34,9 @@ from powercontext_eval.errors import PowerContextEvalError
 DEFAULT_ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 DEFAULT_ANTHROPIC_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
 DEFAULT_READER_MODEL = "deepseek-flash-latest"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_DEEPSEEK_TOKEN_ENV = "DEEPSEEK_API_KEY"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
 READER_MANIFEST_SCHEMA = "powercontext.longmemeval-v2-reader-run.v1"
 READER_OUTPUT_SCHEMA = "powercontext.longmemeval-v2-reader-output.v1"
 READER_FAILURE_SCHEMA = "powercontext.longmemeval-v2-reader-failure.v1"
@@ -131,13 +134,83 @@ class AnthropicCompatibleReader:
         return value
 
 
+class DeepSeekOpenAIReader:
+    """Use DeepSeek's OpenAI-compatible Chat Completions API without persisting credentials."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        timeout_seconds: float,
+    ) -> None:
+        parsed = urlsplit(base_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ReaderSmokeError("Reader base URL must be an HTTPS URL without credentials")
+        if not token.strip():
+            raise ReaderSmokeError("Reader token is empty")
+        if not model.strip():
+            raise ReaderSmokeError("Reader model is empty")
+        if max_tokens <= 0:
+            raise ReaderSmokeError("Reader max_tokens must be positive")
+        if not 0 <= temperature <= 2:
+            raise ReaderSmokeError("Reader temperature must be from 0 through 2")
+        if timeout_seconds <= 0:
+            raise ReaderSmokeError("Reader timeout_seconds must be positive")
+        self._endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        self._token = token
+        self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._timeout_seconds = timeout_seconds
+
+    def complete(self, *, system: str, content: list[dict[str, object]]) -> Mapping[str, object]:
+        user_text = "".join(_nonblank(item.get("text"), "prepared user text") for item in content)
+        request = Request(
+            self._endpoint,
+            data=json.dumps(
+                {
+                    "model": self._model,
+                    "max_tokens": self._max_tokens,
+                    "temperature": self._temperature,
+                    "thinking": {"type": "disabled"},
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user_text},
+                    ],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode(),
+            headers={"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:
+                body = response.read()
+        except HTTPError as error:
+            raise ReaderSmokeError(f"Reader request returned HTTP {error.code}") from error
+        except (OSError, URLError) as error:
+            raise ReaderSmokeError("Reader request failed") from error
+        try:
+            value = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ReaderSmokeError("Reader returned invalid JSON") from error
+        return _normalize_deepseek_response(value)
+
+
 def run_reader_smoke(
     *,
     prepared_dir: Path,
     output_dir: Path,
+    provider: str = "anthropic-compatible",
+    base_url: str | None = None,
     base_url_env: str = DEFAULT_ANTHROPIC_BASE_URL_ENV,
-    token_env: str = DEFAULT_ANTHROPIC_TOKEN_ENV,
-    model: str = DEFAULT_READER_MODEL,
+    token_env: str | None = None,
+    model: str | None = None,
     max_tokens: int = 512,
     temperature: float = 0.0,
     timeout_seconds: float = 120.0,
@@ -148,7 +221,11 @@ def run_reader_smoke(
 
     if output_dir.exists():
         raise ReaderSmokeError(f"Refusing to overwrite Reader artifacts: {output_dir}")
-    normalized_model = _nonblank(model, "model")
+    if provider not in {"anthropic-compatible", "deepseek-openai"}:
+        raise ReaderSmokeError("provider must be anthropic-compatible or deepseek-openai")
+    normalized_model = _nonblank(
+        model or (DEFAULT_DEEPSEEK_MODEL if provider == "deepseek-openai" else DEFAULT_READER_MODEL), "model"
+    )
     if max_questions is not None and (isinstance(max_questions, bool) or max_questions <= 0):
         raise ReaderSmokeError("max_questions must be null or positive")
     prepared_manifest = _load_json(prepared_dir / "prepare-manifest.json", "prepare manifest")
@@ -159,17 +236,36 @@ def run_reader_smoke(
     _validate_prepared_artifacts(prepared_manifest, prepared_summary)
 
     if transport is None:
-        base_url = _nonblank(os.getenv(base_url_env), base_url_env)
-        token = _nonblank(os.getenv(token_env), token_env)
-        active_transport: ReaderTransport = AnthropicCompatibleReader(
-            base_url,
-            token=token,
-            model=normalized_model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            timeout_seconds=timeout_seconds,
+        resolved_token_env = token_env or (
+            DEFAULT_DEEPSEEK_TOKEN_ENV if provider == "deepseek-openai" else DEFAULT_ANTHROPIC_TOKEN_ENV
         )
+        resolved_base_url = _nonblank(
+            base_url or (DEFAULT_DEEPSEEK_BASE_URL if provider == "deepseek-openai" else os.getenv(base_url_env)),
+            "base_url",
+        )
+        token = _nonblank(os.getenv(resolved_token_env), resolved_token_env)
+        if provider == "deepseek-openai":
+            active_transport = DeepSeekOpenAIReader(
+                resolved_base_url,
+                token=token,
+                model=normalized_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            active_transport = AnthropicCompatibleReader(
+                resolved_base_url,
+                token=token,
+                model=normalized_model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            )
     else:
+        resolved_token_env = token_env or (
+            DEFAULT_DEEPSEEK_TOKEN_ENV if provider == "deepseek-openai" else DEFAULT_ANTHROPIC_TOKEN_ENV
+        )
         active_transport = transport
 
     try:
@@ -195,9 +291,10 @@ def run_reader_smoke(
                 "summary_sha256": _file_digest(prepared_dir / "prepare-summary.json"),
             },
             "reader": {
-                "provider": "anthropic-compatible",
+                "provider": provider,
                 "base_url_env": base_url_env,
-                "token_env": token_env,
+                "base_url": None if base_url is None else "configured-directly",
+                "token_env": resolved_token_env,
                 "model": normalized_model,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
@@ -326,6 +423,33 @@ def _response_text(response: Mapping[str, object]) -> str:
     if not text:
         raise ReaderSmokeError("Reader response contains no text")
     return text
+
+
+def _normalize_deepseek_response(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ReaderSmokeError("Reader returned a non-object response")
+    choices = value.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
+        raise ReaderSmokeError("Reader response choices are invalid")
+    choice = choices[0]
+    message = choice.get("message")
+    if not isinstance(message, Mapping):
+        raise ReaderSmokeError("Reader response message is invalid")
+    text = message.get("content")
+    if not isinstance(text, str) or not text.strip():
+        raise ReaderSmokeError("Reader response contains no text")
+    usage = value.get("usage")
+    if not isinstance(usage, Mapping):
+        usage = {}
+    return {
+        "model": value.get("model"),
+        "stop_reason": choice.get("finish_reason"),
+        "content": [{"type": "text", "text": text}],
+        "usage": {
+            "input_tokens": _nonnegative_int(usage.get("prompt_tokens")),
+            "output_tokens": _nonnegative_int(usage.get("completion_tokens")),
+        },
+    }
 
 
 def _validate_prepared_artifacts(manifest: dict[str, object], summary: dict[str, object]) -> None:

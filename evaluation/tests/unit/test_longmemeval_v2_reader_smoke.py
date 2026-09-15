@@ -17,10 +17,16 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, Self
 
 import pytest
 
-from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeError, run_reader_smoke
+from powercontext_eval.benchmarks.longmemeval_v2 import reader_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
+    DeepSeekOpenAIReader,
+    ReaderSmokeError,
+    run_reader_smoke,
+)
 
 
 class FakeReader:
@@ -111,3 +117,55 @@ def test_reader_smoke_refuses_to_overwrite_before_loading_prepared_artifacts(tmp
             output_dir=output,
             transport=FakeReader(),
         )
+
+
+def test_deepseek_reader_uses_openai_messages_and_disables_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[Any] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "model": "deepseek-flash",
+                    "choices": [{"finish_reason": "stop", "message": {"content": "\\boxed{answer}"}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                }
+            ).encode()
+
+    def fake_urlopen(request: Any, *, timeout: float) -> Response:
+        assert timeout == 30
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr(reader_smoke, "urlopen", fake_urlopen)
+    reader = DeepSeekOpenAIReader(
+        "https://api.deepseek.com",
+        token="super-secret-token",
+        model="deepseek-flash",
+        max_tokens=512,
+        temperature=0.0,
+        timeout_seconds=30,
+    )
+
+    response = reader.complete(system="system", content=[{"type": "text", "text": "question"}])
+
+    assert response["usage"] == {"input_tokens": 12, "output_tokens": 3}
+    assert response["content"] == [{"type": "text", "text": "\\boxed{answer}"}]
+    request = requests[0]
+    assert request.full_url == "https://api.deepseek.com/chat/completions"
+    payload = json.loads(request.data)
+    assert payload["model"] == "deepseek-flash"
+    assert payload["thinking"] == {"type": "disabled"}
+    assert payload["messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "question"},
+    ]
+    assert "super-secret-token" not in request.data.decode()

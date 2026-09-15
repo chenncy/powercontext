@@ -45,8 +45,6 @@ from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import (
 )
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     DEFAULT_ANTHROPIC_BASE_URL_ENV,
-    DEFAULT_ANTHROPIC_TOKEN_ENV,
-    DEFAULT_READER_MODEL,
     ReaderSmokeError,
     run_reader_smoke,
 )
@@ -334,9 +332,11 @@ def longmemeval_v2_prepare_smoke(
 def longmemeval_v2_reader_smoke(
     prepared_dir: Annotated[Path, typer.Option("--prepared-dir")],
     output_dir: Annotated[Path, typer.Option("--output-dir")],
-    model: Annotated[str, typer.Option("--model")] = DEFAULT_READER_MODEL,
+    provider: Annotated[str, typer.Option("--provider")] = "anthropic-compatible",
+    model: Annotated[str | None, typer.Option("--model")] = None,
+    base_url: Annotated[str | None, typer.Option("--base-url")] = None,
     base_url_env: Annotated[str, typer.Option("--base-url-env")] = DEFAULT_ANTHROPIC_BASE_URL_ENV,
-    token_env: Annotated[str, typer.Option("--token-env")] = DEFAULT_ANTHROPIC_TOKEN_ENV,
+    token_env: Annotated[str | None, typer.Option("--token-env")] = None,
     max_tokens: Annotated[int, typer.Option("--max-tokens", min=1)] = 512,
     temperature: Annotated[float, typer.Option("--temperature", min=0.0, max=2.0)] = 0.0,
     timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1.0)] = 120.0,
@@ -348,7 +348,9 @@ def longmemeval_v2_reader_smoke(
         result = run_reader_smoke(
             prepared_dir=prepared_dir,
             output_dir=output_dir,
+            provider=provider,
             model=model,
+            base_url=base_url,
             base_url_env=base_url_env,
             token_env=token_env,
             max_tokens=max_tokens,
