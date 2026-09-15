@@ -18,6 +18,7 @@ import pytest
 from typer.testing import CliRunner
 
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun
+from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeRun
 from powercontext_eval.cli import app
 
@@ -131,5 +132,51 @@ def test_longmemeval_v2_prepare_smoke_runs_without_reader_or_judge(
             "processor_model": "Qwen/Qwen3.5-9B",
             "processor_revision": "processor-sha",
             "memory_context_max_tokens": 200_000,
+        }
+    ]
+
+
+def test_longmemeval_v2_reader_smoke_uses_environment_reference_without_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> ReaderSmokeRun:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return ReaderSmokeRun(
+            output_dir=output,
+            manifest_path=output / "reader-manifest.json",
+            outputs_path=output / "reader-outputs.jsonl",
+            failures_path=output / "reader-failures.jsonl",
+            summary_path=output / "reader-summary.json",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_reader_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "reader-smoke",
+            "--prepared-dir",
+            "/prepared",
+            "--output-dir",
+            "/output",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"classification": "smoke-subset-reader-only"' in result.output
+    assert calls == [
+        {
+            "prepared_dir": Path("/prepared"),
+            "output_dir": Path("/output"),
+            "model": "deepseek-flash-latest",
+            "base_url_env": "ANTHROPIC_BASE_URL",
+            "token_env": "ANTHROPIC_AUTH_TOKEN",
+            "max_tokens": 512,
+            "temperature": 0.0,
+            "timeout_seconds": 120.0,
+            "max_questions": None,
         }
     ]

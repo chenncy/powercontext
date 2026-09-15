@@ -43,6 +43,13 @@ from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import (
     PrepareSmokeError,
     prepare_reader_inputs_smoke,
 )
+from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
+    DEFAULT_ANTHROPIC_BASE_URL_ENV,
+    DEFAULT_ANTHROPIC_TOKEN_ENV,
+    DEFAULT_READER_MODEL,
+    ReaderSmokeError,
+    run_reader_smoke,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import prepare_smoke_run
 from powercontext_eval.benchmarks.swebench_pro.catalog import PUBLIC_V2_TASK_SET, SweBenchProCatalog, TaskSet
@@ -315,6 +322,49 @@ def longmemeval_v2_prepare_smoke(
                 "classification": "smoke-subset-prepare-only",
                 "manifest": str(result.manifest_path),
                 "prompts": str(result.prompts_path),
+                "summary": str(result.summary_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@longmemeval_v2_app.command("reader-smoke")
+def longmemeval_v2_reader_smoke(
+    prepared_dir: Annotated[Path, typer.Option("--prepared-dir")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
+    model: Annotated[str, typer.Option("--model")] = DEFAULT_READER_MODEL,
+    base_url_env: Annotated[str, typer.Option("--base-url-env")] = DEFAULT_ANTHROPIC_BASE_URL_ENV,
+    token_env: Annotated[str, typer.Option("--token-env")] = DEFAULT_ANTHROPIC_TOKEN_ENV,
+    max_tokens: Annotated[int, typer.Option("--max-tokens", min=1)] = 512,
+    temperature: Annotated[float, typer.Option("--temperature", min=0.0, max=2.0)] = 0.0,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=1.0)] = 120.0,
+    max_questions: Annotated[int | None, typer.Option("--max-questions", min=1)] = None,
+) -> None:
+    """Call a configured Reader over prepared smoke prompts without scoring."""
+
+    try:
+        result = run_reader_smoke(
+            prepared_dir=prepared_dir,
+            output_dir=output_dir,
+            model=model,
+            base_url_env=base_url_env,
+            token_env=token_env,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+            max_questions=max_questions,
+        )
+    except ReaderSmokeError as error:
+        typer.echo(f"LongMemEval-V2 Reader failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset-reader-only",
+                "manifest": str(result.manifest_path),
+                "outputs": str(result.outputs_path),
                 "summary": str(result.summary_path),
             },
             ensure_ascii=False,
