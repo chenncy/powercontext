@@ -49,6 +49,19 @@ from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     run_reader_smoke,
 )
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import (
+    DEFAULT_DEEPSEEK_BASE_URL as SCORE_DEFAULT_DEEPSEEK_BASE_URL,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import (
+    DEFAULT_DEEPSEEK_MODEL as SCORE_DEFAULT_DEEPSEEK_MODEL,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import (
+    DEFAULT_DEEPSEEK_TOKEN_ENV as SCORE_DEFAULT_DEEPSEEK_TOKEN_ENV,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import (
+    ScoreSmokeError,
+    run_score_smoke,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import prepare_smoke_run
 from powercontext_eval.benchmarks.swebench_pro.catalog import PUBLIC_V2_TASK_SET, SweBenchProCatalog, TaskSet
 from powercontext_eval.codex import DEFAULT_CODEX_MODEL, DEFAULT_REASONING_EFFORT
@@ -367,6 +380,53 @@ def longmemeval_v2_reader_smoke(
                 "classification": "smoke-subset-reader-only",
                 "manifest": str(result.manifest_path),
                 "outputs": str(result.outputs_path),
+                "summary": str(result.summary_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@longmemeval_v2_app.command("score-smoke")
+def longmemeval_v2_score_smoke(
+    reader_dir: Annotated[Path, typer.Option("--reader-dir")],
+    data_root: Annotated[Path, typer.Option("--data-root")],
+    smoke_manifest: Annotated[Path, typer.Option("--smoke-manifest")],
+    harness_root: Annotated[Path, typer.Option("--harness-root")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
+    judge_model: Annotated[str, typer.Option("--judge-model")] = SCORE_DEFAULT_DEEPSEEK_MODEL,
+    judge_token_env: Annotated[str, typer.Option("--judge-token-env")] = SCORE_DEFAULT_DEEPSEEK_TOKEN_ENV,
+    judge_base_url: Annotated[str, typer.Option("--judge-base-url")] = SCORE_DEFAULT_DEEPSEEK_BASE_URL,
+    judge_max_tokens: Annotated[int, typer.Option("--judge-max-tokens", min=1)] = 256,
+    judge_temperature: Annotated[float, typer.Option("--judge-temperature", min=0.0, max=2.0)] = 0.0,
+    judge_timeout_seconds: Annotated[float, typer.Option("--judge-timeout-seconds", min=1.0)] = 120.0,
+) -> None:
+    """Score Reader smoke outputs with pinned rules and DeepSeek only where upstream requires a judge."""
+
+    try:
+        result = run_score_smoke(
+            reader_dir=reader_dir,
+            data_root=data_root,
+            smoke_manifest=smoke_manifest,
+            harness_root=harness_root,
+            output_dir=output_dir,
+            judge_model=judge_model,
+            judge_token_env=judge_token_env,
+            judge_base_url=judge_base_url,
+            judge_max_tokens=judge_max_tokens,
+            judge_temperature=judge_temperature,
+            judge_timeout_seconds=judge_timeout_seconds,
+        )
+    except ScoreSmokeError as error:
+        typer.echo(f"LongMemEval-V2 scoring failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset-score-only",
+                "manifest": str(result.manifest_path),
+                "results": str(result.results_path),
                 "summary": str(result.summary_path),
             },
             ensure_ascii=False,

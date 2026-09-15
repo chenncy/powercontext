@@ -336,6 +336,30 @@ The Reader writes `reader-manifest.json`, `reader-outputs.jsonl`,
 returned by the API but does not score answers. Keep OpenTelemetry variables
 out of this command when prompt telemetry is not approved.
 
+Score Reader outputs with the pinned deterministic metric functions. The
+abstention and gotchas metric types require an LLM Judge and send the question,
+reference answer, full Reader response, and parsed answer to the configured
+Judge provider:
+
+```bash
+export DEEPSEEK_API_KEY=YOUR_KEY
+uv run --project evaluation powercontext-eval longmemeval-v2 score-smoke \
+  --reader-dir /path/to/reader-artifacts \
+  --data-root /path/to/longmemeval-v2-data \
+  --smoke-manifest evaluation/locks/longmemeval-v2-small-v1.smoke.json \
+  --harness-root /path/to/LongMemEval-V2 \
+  --judge-model deepseek-flash \
+  --judge-token-env DEEPSEEK_API_KEY \
+  --judge-max-tokens 256 \
+  --judge-temperature 0 \
+  --output-dir /path/to/new-score-artifacts
+```
+
+The score run writes `per-question.jsonl`, `judge-outputs.jsonl`,
+`score-failures.jsonl`, and `score-summary.json`. It also writes
+`scoring-inputs.local.jsonl`, which contains reference answers for local replay
+and must remain outside Git, shared reports, and telemetry.
+
 ## Configuration files
 
 Only the environment file configures the evaluation platform. The other files either belong to Codex or are

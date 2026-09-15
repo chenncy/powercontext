@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeRun
+from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeRun
 from powercontext_eval.cli import app
 
 
@@ -180,5 +181,61 @@ def test_longmemeval_v2_reader_smoke_uses_environment_reference_without_secret(
             "temperature": 0.0,
             "timeout_seconds": 120.0,
             "max_questions": None,
+        }
+    ]
+
+
+def test_longmemeval_v2_score_smoke_uses_local_reader_artifacts_and_judge_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> ScoreSmokeRun:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return ScoreSmokeRun(
+            output_dir=output,
+            manifest_path=output / "score-manifest.json",
+            inputs_path=output / "scoring-inputs.local.jsonl",
+            results_path=output / "per-question.jsonl",
+            judge_outputs_path=output / "judge-outputs.jsonl",
+            failures_path=output / "score-failures.jsonl",
+            summary_path=output / "score-summary.json",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_score_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "score-smoke",
+            "--reader-dir",
+            "/reader",
+            "--data-root",
+            "/data",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--output-dir",
+            "/output",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"classification": "smoke-subset-score-only"' in result.output
+    assert calls == [
+        {
+            "reader_dir": Path("/reader"),
+            "data_root": Path("/data"),
+            "smoke_manifest": Path("/smoke.json"),
+            "harness_root": Path("/harness"),
+            "output_dir": Path("/output"),
+            "judge_model": "deepseek-flash",
+            "judge_token_env": "DEEPSEEK_API_KEY",
+            "judge_base_url": "https://api.deepseek.com",
+            "judge_max_tokens": 256,
+            "judge_temperature": 0.0,
+            "judge_timeout_seconds": 120.0,
         }
     ]
