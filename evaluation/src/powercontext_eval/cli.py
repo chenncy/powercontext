@@ -48,6 +48,7 @@ from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     ReaderSmokeError,
     run_reader_smoke,
 )
+from powercontext_eval.benchmarks.longmemeval_v2.replay_score import ReplayScoreError, replay_score_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import (
     DEFAULT_DEEPSEEK_BASE_URL as SCORE_DEFAULT_DEEPSEEK_BASE_URL,
@@ -425,6 +426,33 @@ def longmemeval_v2_score_smoke(
         json.dumps(
             {
                 "classification": "smoke-subset-score-only",
+                "manifest": str(result.manifest_path),
+                "results": str(result.results_path),
+                "summary": str(result.summary_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@longmemeval_v2_app.command("replay-score")
+def longmemeval_v2_replay_score(
+    score_dir: Annotated[Path, typer.Option("--score-dir")],
+    harness_root: Annotated[Path, typer.Option("--harness-root")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
+) -> None:
+    """Replay saved deterministic and Judge score decisions without model calls."""
+
+    try:
+        result = replay_score_smoke(score_dir=score_dir, harness_root=harness_root, output_dir=output_dir)
+    except ReplayScoreError as error:
+        typer.echo(f"LongMemEval-V2 score replay failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset-score-replay",
                 "manifest": str(result.manifest_path),
                 "results": str(result.results_path),
                 "summary": str(result.summary_path),

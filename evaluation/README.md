@@ -360,6 +360,20 @@ The score run writes `per-question.jsonl`, `judge-outputs.jsonl`,
 `scoring-inputs.local.jsonl`, which contains reference answers for local replay
 and must remain outside Git, shared reports, and telemetry.
 
+Replay the saved deterministic and Judge decisions without a Reader, Judge
+provider, token, or network request:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 replay-score \
+  --score-dir /path/to/score-artifacts \
+  --harness-root /path/to/LongMemEval-V2 \
+  --output-dir /path/to/new-score-replay-artifacts
+```
+
+The replay records source digests and writes `replay-manifest.json`,
+`replay-per-question.jsonl`, `replay-failures.jsonl`, and
+`replay-summary.json`. It reuses only saved Judge labels for LLM-scored cases.
+
 ## Configuration files
 
 Only the environment file configures the evaluation platform. The other files either belong to Codex or are

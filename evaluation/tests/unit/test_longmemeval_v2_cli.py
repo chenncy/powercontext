@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeRun
+from powercontext_eval.benchmarks.longmemeval_v2.replay_score import ReplayScoreRun
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeRun
 from powercontext_eval.cli import app
@@ -239,3 +240,39 @@ def test_longmemeval_v2_score_smoke_uses_local_reader_artifacts_and_judge_enviro
             "judge_timeout_seconds": 120.0,
         }
     ]
+
+
+def test_longmemeval_v2_replay_score_uses_only_local_score_artifacts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def replay(**kwargs: object) -> ReplayScoreRun:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return ReplayScoreRun(
+            output_dir=output,
+            manifest_path=output / "replay-manifest.json",
+            results_path=output / "replay-per-question.jsonl",
+            failures_path=output / "replay-failures.jsonl",
+            summary_path=output / "replay-summary.json",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.replay_score_smoke", replay)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "replay-score",
+            "--score-dir",
+            "/score",
+            "--harness-root",
+            "/harness",
+            "--output-dir",
+            "/output",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"classification": "smoke-subset-score-replay"' in result.output
+    assert calls == [{"score_dir": Path("/score"), "harness_root": Path("/harness"), "output_dir": Path("/output")}]
