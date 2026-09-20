@@ -20,7 +20,9 @@ from typer.testing import CliRunner
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.replay_score import ReplayScoreRun
+from powercontext_eval.benchmarks.longmemeval_v2.report import ReportError, ReportRun
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeRun
+from powercontext_eval.benchmarks.longmemeval_v2.run_smoke import RunSmokeError, SmokeRunResult
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeRun
 from powercontext_eval.cli import app
 
@@ -276,3 +278,201 @@ def test_longmemeval_v2_replay_score_uses_only_local_score_artifacts(
     assert result.exit_code == 0, result.output
     assert '"classification": "smoke-subset-score-replay"' in result.output
     assert calls == [{"score_dir": Path("/score"), "harness_root": Path("/harness"), "output_dir": Path("/output")}]
+
+
+def test_longmemeval_v2_run_smoke_forwards_every_stage_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> SmokeRunResult:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return SmokeRunResult(
+            output_dir=output,
+            manifest_path=output / "run-manifest.json",
+            summary_path=output / "run-summary.json",
+            failures_path=output / "failures.jsonl",
+            status="completed",
+            completed_phases=("preflight", "retrieval", "prepare", "reader", "score", "replay"),
+            skipped_phases=(),
+            failed_phase=None,
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert '"status": "completed"' in result.output
+    assert calls == [
+        {
+            "data_root": Path("/data"),
+            "dataset_lock": Path("/dataset-lock.json"),
+            "smoke_manifest": Path("/smoke.json"),
+            "harness_root": Path("/harness"),
+            "harness_python": Path("/harness/python"),
+            "processor_revision": "processor-sha",
+            "output_dir": Path("/output"),
+            "powercontext_revision": "pc-sha",
+            "integration_revision": "integration-sha",
+            "run_id": None,
+            "processor_model": "Qwen/Qwen3.5-9B",
+            "memory_context_max_tokens": 200_000,
+            "powercontext_base_url": "http://127.0.0.1:8000",
+            "powercontext_token_env": "POWERCONTEXT_TOKEN",
+            "search_mode": "fts",
+            "search_limit": 10,
+            "timeout_seconds": 30.0,
+            "reader_provider": "deepseek-openai",
+            "reader_model": None,
+            "reader_base_url": None,
+            "reader_base_url_env": "ANTHROPIC_BASE_URL",
+            "reader_token_env": None,
+            "reader_max_tokens": 512,
+            "reader_temperature": 0.0,
+            "reader_timeout_seconds": 120.0,
+            "judge_provider": "deepseek-openai",
+            "judge_model": "deepseek-flash",
+            "judge_token_env": "DEEPSEEK_API_KEY",
+            "judge_base_url": "https://api.deepseek.com",
+            "judge_max_tokens": 256,
+            "judge_temperature": 0.0,
+            "judge_timeout_seconds": 120.0,
+            "skip_reader": False,
+            "skip_score": False,
+        }
+    ]
+
+
+def test_longmemeval_v2_run_smoke_exits_nonzero_without_a_complete_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def run(**kwargs: object) -> SmokeRunResult:
+        output = tmp_path / "output"
+        return SmokeRunResult(
+            output_dir=output,
+            manifest_path=output / "run-manifest.json",
+            summary_path=output / "run-summary.json",
+            failures_path=output / "failures.jsonl",
+            status="failed",
+            completed_phases=("preflight", "retrieval"),
+            skipped_phases=("prepare", "reader", "score", "replay"),
+            failed_phase="prepare",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--skip-reader",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert '"failed_phase": "prepare"' in result.output
+    assert '"status": "failed"' in result.output
+
+
+def test_longmemeval_v2_run_smoke_reports_a_refused_output_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(**kwargs: object) -> SmokeRunResult:
+        raise RunSmokeError("Refusing to overwrite smoke run artifacts: /output")
+
+    monkeypatch.setattr("powercontext_eval.cli.run_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Refusing to overwrite smoke run artifacts" in result.output
+
+
+def test_longmemeval_v2_report_reads_only_saved_run_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    def report(**kwargs: object) -> ReportRun:
+        calls.append(kwargs)
+        return ReportRun(report_path=tmp_path / "report.json", markdown_path=tmp_path / "report.md")
+
+    monkeypatch.setattr("powercontext_eval.cli.build_report", report)
+    result = CliRunner().invoke(app, ["longmemeval-v2", "report", "--run-dir", "/run"])
+
+    assert result.exit_code == 0, result.output
+    assert '"classification": "smoke-subset"' in result.output
+    assert calls == [{"run_dir": Path("/run"), "output_dir": None}]
+
+
+def test_longmemeval_v2_report_exits_nonzero_for_a_refused_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    def report(**kwargs: object) -> ReportRun:
+        raise ReportError("Refusing to overwrite report artifacts: /report")
+
+    monkeypatch.setattr("powercontext_eval.cli.build_report", report)
+    result = CliRunner().invoke(app, ["longmemeval-v2", "report", "--run-dir", "/run", "--output-dir", "/report"])
+
+    assert result.exit_code == 1
+    assert "Refusing to overwrite report artifacts" in result.output

@@ -49,7 +49,9 @@ from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     run_reader_smoke,
 )
 from powercontext_eval.benchmarks.longmemeval_v2.replay_score import ReplayScoreError, replay_score_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.report import ReportError, build_report
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.run_smoke import RunSmokeError, run_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import (
     DEFAULT_DEEPSEEK_BASE_URL as SCORE_DEFAULT_DEEPSEEK_BASE_URL,
 )
@@ -456,6 +458,129 @@ def longmemeval_v2_replay_score(
                 "manifest": str(result.manifest_path),
                 "results": str(result.results_path),
                 "summary": str(result.summary_path),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+@longmemeval_v2_app.command("run-smoke")
+def longmemeval_v2_run_smoke(
+    data_root: Annotated[Path, typer.Option("--data-root")],
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
+    smoke_manifest: Annotated[Path, typer.Option("--smoke-manifest")],
+    harness_root: Annotated[Path, typer.Option("--harness-root")],
+    harness_python: Annotated[Path, typer.Option("--harness-python")],
+    processor_revision: Annotated[str, typer.Option("--processor-revision")],
+    output_dir: Annotated[Path, typer.Option("--output-dir")],
+    powercontext_revision: Annotated[str, typer.Option("--powercontext-revision")],
+    integration_revision: Annotated[str, typer.Option("--integration-revision")],
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    processor_model: Annotated[str, typer.Option("--processor-model")] = DEFAULT_PROCESSOR_MODEL,
+    memory_context_max_tokens: Annotated[int, typer.Option("--memory-context-max-tokens", min=1)] = 200_000,
+    powercontext_base_url: Annotated[str, typer.Option("--powercontext-base-url")] = "http://127.0.0.1:8000",
+    powercontext_token_env: Annotated[str, typer.Option("--powercontext-token-env")] = "POWERCONTEXT_TOKEN",
+    search_mode: Annotated[str, typer.Option("--search-mode")] = "fts",
+    search_limit: Annotated[int, typer.Option("--search-limit", min=1, max=50)] = 10,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=0.1)] = 30.0,
+    reader_provider: Annotated[str, typer.Option("--reader-provider")] = "deepseek-openai",
+    reader_model: Annotated[str | None, typer.Option("--reader-model")] = None,
+    reader_base_url: Annotated[str | None, typer.Option("--reader-base-url")] = None,
+    reader_base_url_env: Annotated[str, typer.Option("--reader-base-url-env")] = DEFAULT_ANTHROPIC_BASE_URL_ENV,
+    reader_token_env: Annotated[str | None, typer.Option("--reader-token-env")] = None,
+    reader_max_tokens: Annotated[int, typer.Option("--reader-max-tokens", min=1)] = 512,
+    reader_temperature: Annotated[float, typer.Option("--reader-temperature", min=0.0, max=2.0)] = 0.0,
+    reader_timeout_seconds: Annotated[float, typer.Option("--reader-timeout-seconds", min=1.0)] = 120.0,
+    judge_provider: Annotated[str, typer.Option("--judge-provider")] = "deepseek-openai",
+    judge_model: Annotated[str, typer.Option("--judge-model")] = SCORE_DEFAULT_DEEPSEEK_MODEL,
+    judge_token_env: Annotated[str, typer.Option("--judge-token-env")] = SCORE_DEFAULT_DEEPSEEK_TOKEN_ENV,
+    judge_base_url: Annotated[str, typer.Option("--judge-base-url")] = SCORE_DEFAULT_DEEPSEEK_BASE_URL,
+    judge_max_tokens: Annotated[int, typer.Option("--judge-max-tokens", min=1)] = 256,
+    judge_temperature: Annotated[float, typer.Option("--judge-temperature", min=0.0, max=2.0)] = 0.0,
+    judge_timeout_seconds: Annotated[float, typer.Option("--judge-timeout-seconds", min=1.0)] = 120.0,
+    skip_reader: Annotated[bool, typer.Option("--skip-reader")] = False,
+    skip_score: Annotated[bool, typer.Option("--skip-score")] = False,
+) -> None:
+    """Run the whole LongMemEval-V2 smoke workload into one fail-closed run directory."""
+
+    try:
+        result = run_smoke(
+            data_root=data_root,
+            dataset_lock=dataset_lock,
+            smoke_manifest=smoke_manifest,
+            harness_root=harness_root,
+            harness_python=harness_python,
+            processor_revision=processor_revision,
+            output_dir=output_dir,
+            powercontext_revision=powercontext_revision,
+            integration_revision=integration_revision,
+            run_id=run_id,
+            processor_model=processor_model,
+            memory_context_max_tokens=memory_context_max_tokens,
+            powercontext_base_url=powercontext_base_url,
+            powercontext_token_env=powercontext_token_env,
+            search_mode=search_mode,
+            search_limit=search_limit,
+            timeout_seconds=timeout_seconds,
+            reader_provider=reader_provider,
+            reader_model=reader_model,
+            reader_base_url=reader_base_url,
+            reader_base_url_env=reader_base_url_env,
+            reader_token_env=reader_token_env,
+            reader_max_tokens=reader_max_tokens,
+            reader_temperature=reader_temperature,
+            reader_timeout_seconds=reader_timeout_seconds,
+            judge_provider=judge_provider,
+            judge_model=judge_model,
+            judge_token_env=judge_token_env,
+            judge_base_url=judge_base_url,
+            judge_max_tokens=judge_max_tokens,
+            judge_temperature=judge_temperature,
+            judge_timeout_seconds=judge_timeout_seconds,
+            skip_reader=skip_reader,
+            skip_score=skip_score,
+        )
+    except (RunSmokeError, LongMemEvalV2CatalogError) as error:
+        typer.echo(f"LongMemEval-V2 smoke run failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset",
+                "status": result.status,
+                "manifest": str(result.manifest_path),
+                "summary": str(result.summary_path),
+                "completed_phases": list(result.completed_phases),
+                "skipped_phases": list(result.skipped_phases),
+                "failed_phase": result.failed_phase,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    if result.status != "completed":
+        raise typer.Exit(code=1)
+
+
+@longmemeval_v2_app.command("report")
+def longmemeval_v2_report(
+    run_dir: Annotated[Path, typer.Option("--run-dir")],
+    output_dir: Annotated[Path | None, typer.Option("--output-dir")] = None,
+) -> None:
+    """Summarize one saved smoke run into a single unified report without a model or server."""
+
+    try:
+        result = build_report(run_dir=run_dir, output_dir=output_dir)
+    except ReportError as error:
+        typer.echo(f"LongMemEval-V2 report failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {
+                "classification": "smoke-subset",
+                "report": str(result.report_path),
+                "markdown": str(result.markdown_path),
             },
             ensure_ascii=False,
             sort_keys=True,

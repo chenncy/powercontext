@@ -181,12 +181,14 @@ uv run --project evaluation powercontext-eval swebench-pro create-batch \
   --idempotency-key "stability-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-## LongMemEval-V2 smoke input validation
+## LongMemEval-V2 smoke workload
 
-The LongMemEval-V2 command validates a fixed smoke subset and writes its
-preflight artifacts. The PowerContext Memory adapter and pinned-harness
-bootstrap are available separately; this workload does not yet provide a
-Reader, Judge, scoring runner, or full-run workflow.
+The LongMemEval-V2 commands run a fixed ten-question smoke subset end to end: preflight
+validation of the pinned inputs, real PowerContext HTTP retrieval, prompt preparation, an
+optional Reader, upstream scoring, offline score replay, and a one-command orchestration
+(`run-smoke`) that writes one run directory with a unified report. A full-tier run has not been
+executed; its recorded configuration lives in
+[docs/longmemeval-v2-full-run.md](docs/longmemeval-v2-full-run.md).
 
 Prepare a detached upstream checkout at the pinned harness commit and download
 the matching LongMemEval-V2 data root outside this repository. The checked-in
@@ -373,6 +375,85 @@ uv run --project evaluation powercontext-eval longmemeval-v2 replay-score \
 The replay records source digests and writes `replay-manifest.json`,
 `replay-per-question.jsonl`, `replay-failures.jsonl`, and
 `replay-summary.json`. It reuses only saved Judge labels for LLM-scored cases.
+
+### One-command smoke run
+
+`run-smoke` chains every stage above into one fail-closed run directory. With a
+ready PowerContext Server and no model credentials, run the model-free mode
+first:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 run-smoke \
+  --data-root /path/to/longmemeval-v2-data \
+  --dataset-lock evaluation/locks/longmemeval-v2-small-v1.dataset-lock.json \
+  --smoke-manifest evaluation/locks/longmemeval-v2-small-v1.smoke.json \
+  --harness-root /path/to/LongMemEval-V2 \
+  --harness-python /path/to/longmemeval-harness-python \
+  --processor-revision PROCESSOR_GIT_SHA \
+  --powercontext-revision POWERCONTEXT_GIT_SHA \
+  --integration-revision INTEGRATION_GIT_SHA \
+  --powercontext-base-url http://127.0.0.1:18765 \
+  --skip-reader \
+  --output-dir /path/to/new-run-artifacts
+```
+
+The full mode drops `--skip-reader`, requires `DEEPSEEK_API_KEY` in the environment, and also
+runs the Reader, Judge scoring, and score replay. `--skip-score` keeps the Reader but skips
+Judge scoring and replay. Every mode writes the same layout:
+
+```text
+<output-dir>/
+  run-manifest.json    # exclusive-create; inputs, revisions, providers (no secret values)
+  run-summary.json     # completed/skipped/failed phases; accuracy only when scored
+  failures.jsonl       # one row per failed phase, with an error class
+  report.json          # unified machine-readable summary
+  report.md            # human summary with the fixed boundary banner
+  01-inputs/  02-retrieval/  03-prepare/  04-reader/  05-score/  06-replay/
+```
+
+The command exits non-zero unless the run completed: `--skip-reader` and `--skip-score` runs end
+as `partial`, and a failed stage ends as `failed` while keeping the earlier stage artifacts.
+Recorded failure summaries are redacted against the configured token values, including
+`POWERCONTEXT_TOKEN` in model-free mode. Reference answers are read only by the score stage,
+which writes the local replay artifact, and by the replay stage reading that artifact; the
+adapter, retrieval, prepare, and reader stages never read them.
+
+Regenerate or inspect a report for any saved run without a model, provider, or server:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 report \
+  --run-dir /path/to/saved-run \
+  --output-dir /path/to/new-report-artifacts
+```
+
+### LongMemEval-V2 full run (not executed)
+
+A full-tier run has not been executed and is not approved, and its results must never be
+confused with the smoke subset. The recorded prerequisites, configuration template,
+cost-estimation and approval gates, output isolation, result labels, and failure-recovery
+procedure live in [docs/longmemeval-v2-full-run.md](docs/longmemeval-v2-full-run.md); the
+secret-free environment template lives in
+[docs/longmemeval-v2-run-config.example.env](docs/longmemeval-v2-run-config.example.env). A
+full-tier dataset lock and question manifest do not exist yet and must be created and reviewed
+before any full run.
+
+### What the LongMemEval-V2 workload evaluates
+
+The smoke workload and any future full run measure one pipeline over fixed LongMemEval-V2
+trajectories: whether the PowerContext Memory adapter retrieves citable evidence through public
+interfaces under fixed upstream data, fixed questions, and a fixed context budget; the answer
+accuracy, latency, context size, failures, and abstention of the configured Reader and Judge; and
+whether saved outputs replay the same deterministic scoring inputs without a model.
+
+They do not evaluate Handoff, cross-host recovery, normal Runtime persistence, or Work
+Continuity. A ten-question smoke subset cannot be extrapolated to full benchmark performance,
+general model capability, or product leadership, and it does not replace LoCoMo, SWE-bench Pro,
+or real user-task acceptance. Scores must never be improved by rewriting gold prompts, reference
+answers, or the Memory schema. Every smoke artifact is labelled `smoke-subset`; none of them is
+a complete benchmark result.
+
+The implemented scope and local validation evidence are summarized in
+[docs/longmemeval-v2-smoke-delivery.md](docs/longmemeval-v2-smoke-delivery.md).
 
 ## Configuration files
 
