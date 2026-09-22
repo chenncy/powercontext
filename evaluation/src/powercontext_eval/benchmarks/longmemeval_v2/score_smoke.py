@@ -62,6 +62,41 @@ class ScoreSmokeError(PowerContextEvalError):
     """Reader outputs cannot be scored under the pinned LongMemEval-V2 contract."""
 
 
+class JudgeJudgementError(ScoreSmokeError):
+    """A completed Judge call could not be parsed into a judgement; its usage evidence is preserved."""
+
+    def __init__(self, message: str, *, usage: dict[str, object], judge_latency_ms: float) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.judge_latency_ms = judge_latency_ms
+
+
+@dataclass
+class _JudgeUsageAccount:
+    """Sum Judge call usage so completed calls stay priced even when scoring later fails."""
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    cache_split_reported: bool = True
+
+    def account(self, usage: object) -> None:
+        self.calls += 1
+        if not isinstance(usage, Mapping):
+            return
+        self.input_tokens += _nonnegative_int(usage.get("input_tokens"))
+        self.output_tokens += _nonnegative_int(usage.get("output_tokens"))
+        hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
+        miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
+        if hit is None or miss is None:
+            self.cache_split_reported = False
+        else:
+            self.cache_hit_tokens += hit
+            self.cache_miss_tokens += miss
+
+
 class MetricsAPI(Protocol):
     def eval_name(self, eval_spec: str) -> str: ...
 
@@ -187,12 +222,7 @@ def run_score_smoke(
     started_ns = time.perf_counter_ns()
     correct = 0
     failed = 0
-    judge_calls = 0
-    judge_input_tokens = 0
-    judge_output_tokens = 0
-    judge_cache_hit_tokens = 0
-    judge_cache_miss_tokens = 0
-    judge_cache_split_reported = True
+    judge_account = _JudgeUsageAccount()
     for sequence, question in enumerate(questions, start=1):
         question_id = _nonblank(question.get("id"), "question.id")
         reader = outputs[question_id]
@@ -200,6 +230,24 @@ def run_score_smoke(
             score_input, result, judge_output = _score_one(
                 metrics, question, reader, sequence=sequence, transport=transport
             )
+        except JudgeJudgementError as error:
+            # The Judge transport already completed and returned usage; count the call
+            # and keep the evidence with the failure instead of losing the accounting.
+            failed += 1
+            judge_account.account(error.usage)
+            _append_json(
+                failures_path,
+                {
+                    "schema": SCORE_FAILURE_SCHEMA,
+                    "question_id": question["id"],
+                    "phase": "scoring",
+                    "error_type": type(error).__name__,
+                    "summary": (str(error).strip() or type(error).__name__)[:500],
+                    "judge_usage": error.usage,
+                    "judge_latency_ms": error.judge_latency_ms,
+                },
+            )
+            continue
         except Exception as error:  # noqa: BLE001 - one scoring failure must not hide subsequent outcomes
             failed += 1
             _append_json(
@@ -217,18 +265,7 @@ def run_score_smoke(
         _append_json(results_path, result)
         if judge_output is not None:
             _append_json(judge_outputs_path, judge_output)
-            judge_calls += 1
-            usage = judge_output["usage"]
-            if isinstance(usage, Mapping):
-                judge_input_tokens += _nonnegative_int(usage.get("input_tokens"))
-                judge_output_tokens += _nonnegative_int(usage.get("output_tokens"))
-                hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
-                miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
-                if hit is None or miss is None:
-                    judge_cache_split_reported = False
-                else:
-                    judge_cache_hit_tokens += hit
-                    judge_cache_miss_tokens += miss
+            judge_account.account(judge_output["usage"])
         result_correct = result["correct"]
         if not isinstance(result_correct, bool):
             raise TypeError("score result correct field must be a boolean")
@@ -245,22 +282,22 @@ def run_score_smoke(
             "incorrect": total - correct - failed,
             "failed": failed,
             "accuracy": None if failed else correct / total,
-            "judge_calls": judge_calls,
+            "judge_calls": judge_account.calls,
             "judge_usage": _judge_usage_totals(
-                input_tokens=judge_input_tokens,
-                output_tokens=judge_output_tokens,
-                cache_hit_tokens=judge_cache_hit_tokens,
-                cache_miss_tokens=judge_cache_miss_tokens,
-                cache_split_reported=judge_cache_split_reported,
+                input_tokens=judge_account.input_tokens,
+                output_tokens=judge_account.output_tokens,
+                cache_hit_tokens=judge_account.cache_hit_tokens,
+                cache_miss_tokens=judge_account.cache_miss_tokens,
+                cache_split_reported=judge_account.cache_split_reported,
             ),
             "judge_cost": usage_cost_block(
                 judge_price_policy,
                 provider="deepseek-openai",
                 model=_nonblank(judge_model, "judge_model"),
-                input_tokens=judge_input_tokens,
-                cache_hit_tokens=judge_cache_hit_tokens if judge_cache_split_reported else None,
-                cache_miss_tokens=judge_cache_miss_tokens if judge_cache_split_reported else None,
-                output_tokens=judge_output_tokens,
+                input_tokens=judge_account.input_tokens,
+                cache_hit_tokens=judge_account.cache_hit_tokens if judge_account.cache_split_reported else None,
+                cache_miss_tokens=judge_account.cache_miss_tokens if judge_account.cache_split_reported else None,
+                output_tokens=judge_account.output_tokens,
             ),
             "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
         },
@@ -337,10 +374,18 @@ def _score_one(
             system=messages[0]["content"],
             content=[{"type": "text", "text": messages[1]["content"]}],
         )
-        judge_text = _response_text(judge_response)
-        label, reason = metrics._parse_llm_binary_judgement(judge_text)
-        correct = label == 1
-        usage = judge_response.get("usage")
+        judge_latency_ms = round((time.perf_counter_ns() - started_ns) / 1_000_000, 3)
+        usage = _judge_usage(judge_response.get("usage"))
+        try:
+            judge_text = _response_text(judge_response)
+            label, reason = metrics._parse_llm_binary_judgement(judge_text)
+        except Exception as error:
+            detail = str(error).strip() or type(error).__name__
+            raise JudgeJudgementError(
+                f"Judge judgement for question {question_id} could not be parsed: {detail[:200]}",
+                usage=usage,
+                judge_latency_ms=judge_latency_ms,
+            ) from error
         judge_output = {
             "schema": JUDGE_OUTPUT_SCHEMA,
             "question_id": question_id,
@@ -348,9 +393,10 @@ def _score_one(
             "label": label,
             "reason": reason,
             "response_sha256": hashlib.sha256(judge_text.encode()).hexdigest(),
-            "usage": _judge_usage(usage),
-            "judge_latency_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
+            "usage": usage,
+            "judge_latency_ms": judge_latency_ms,
         }
+        correct = label == 1
         mode = "llm_judge"
     else:
         correct = metrics.score_to_bool(metrics.eval_from_spec(eval_spec, parsed, answer))

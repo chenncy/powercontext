@@ -293,6 +293,63 @@ def test_reuses_one_child_scope_and_one_ingest_for_an_identical_haystack(
     assert results[0]["scope_id"] == results[1]["scope_id"] == "scope-2"
 
 
+class IdempotentScopeRuntime(FakeRetrievalRuntime):
+    """A Server that returns one Scope per idempotency key, like the real persistence layer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scope_by_key: dict[str, str] = {}
+
+    def create_scope(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        self.scopes.append(dict(payload))
+        key = str(payload["idempotency_key"])
+        if key not in self.scope_by_key:
+            self.scope_by_key[key] = f"scope-{len(self.scope_by_key) + 1}"
+        return {"scope_id": self.scope_by_key[key]}
+
+
+def test_repeated_runs_with_the_same_run_id_and_haystack_get_isolated_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = IdempotentScopeRuntime()
+    data_root, smoke_manifest = write_inputs(tmp_path)
+    monkeypatch.setattr(retrieval_smoke, "prepare_smoke_run", fake_preflight)
+    digests = {
+        "questions.jsonl": hashlib.sha256((data_root / "questions.jsonl").read_bytes()).hexdigest(),
+        "trajectories.jsonl": hashlib.sha256((data_root / "trajectories.jsonl").read_bytes()).hexdigest(),
+        "haystacks/lme_v2_small.json": hashlib.sha256(
+            (data_root / "haystacks" / "lme_v2_small.json").read_bytes()
+        ).hexdigest(),
+    }
+    monkeypatch.setattr(retrieval_smoke, "load_dataset_lock", lambda path: SimpleNamespace(file_digests=digests))
+    manifests = []
+    for arm, directory in (
+        ("current-memory-fts-v1", "output-fts"),
+        ("write-time-l0-l1-v1", "output-l0-l1"),
+    ):
+        run_retrieval_smoke(
+            data_root=data_root,
+            dataset_lock=tmp_path / "dataset-lock.json",
+            harness_root=tmp_path / "harness",
+            smoke_manifest=smoke_manifest,
+            output_dir=tmp_path / directory,
+            run_id="same-run",
+            powercontext_revision="powercontext-sha",
+            integration_revision="integration-sha",
+            experiment_arm=arm,
+            runtime=runtime,
+        )
+        manifests.append(json.loads((tmp_path / directory / "retrieval-manifest.json").read_text(encoding="utf-8")))
+
+    assert manifests[0]["execution_namespace"] != manifests[1]["execution_namespace"]
+    assert manifests[0]["root_scope_id"] != manifests[1]["root_scope_id"]
+    first = {entry["scope_id"] for entry in manifests[0]["haystacks"]}
+    second = {entry["scope_id"] for entry in manifests[1]["haystacks"]}
+    assert first and second
+    assert not first & second
+    assert len(runtime.scope_by_key) == 6
+
+
 def test_classifies_one_haystack_ingest_failure_without_stopping_the_other(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

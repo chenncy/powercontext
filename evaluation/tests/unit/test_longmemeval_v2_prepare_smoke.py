@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -90,7 +91,8 @@ def test_prepare_smoke_launches_pinned_worker_with_hashed_retrieval_inputs(
     assert command[command.index("--processor-revision") + 1] == "processor-sha"
     assert kwargs["cwd"] == harness
     assert kwargs["env"]["PYTHONNOUSERSITE"] == "1"
-    assert kwargs["env"]["PYTHONPATH"].endswith("evaluation\\src")
+    source_root = Path(prepare_smoke.__file__).parents[3]
+    assert Path(kwargs["env"]["PYTHONPATH"].split(os.pathsep, 1)[0]).resolve() == source_root.resolve()
 
 
 def test_prepare_smoke_refuses_to_overwrite_before_validating_harness(tmp_path: Path) -> None:
@@ -105,3 +107,49 @@ def test_prepare_smoke_refuses_to_overwrite_before_validating_harness(tmp_path: 
             output_dir=output,
             processor_revision="processor-sha",
         )
+
+
+def test_prepare_smoke_resolves_relative_paths_against_the_caller_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    retrieval = retrieval_artifacts(tmp_path)
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    harness_python = tmp_path / "python.exe"
+    harness_python.write_text("placeholder", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        prompts_path = Path(command[command.index("--prompts-path") + 1])
+        failures_path = Path(command[command.index("--failures-path") + 1])
+        summary_path = Path(command[command.index("--summary-path") + 1])
+        prompts_path.write_text("{}\n", encoding="utf-8")
+        failures_path.write_text("", encoding="utf-8")
+        summary_path.write_text("{}\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "worker-ok\n", "")
+
+    monkeypatch.setattr(prepare_smoke, "validate_harness_checkout", lambda root: None)
+    monkeypatch.setattr(prepare_smoke.subprocess, "run", fake_run)
+
+    prepare_reader_inputs_smoke(
+        retrieval_dir=Path("retrieval"),
+        harness_root=Path("harness"),
+        harness_python=Path("python.exe"),
+        output_dir=Path("prepared"),
+        processor_revision="processor-sha",
+    )
+
+    (command, kwargs) = calls[0]
+    assert Path(command[0]).is_absolute()
+    assert Path(command[0]).resolve() == harness_python.resolve()
+    assert Path(command[command.index("--harness-root") + 1]).resolve() == harness.resolve()
+    assert (
+        Path(command[command.index("--input-path") + 1]).resolve() == (retrieval / "retrieval-results.jsonl").resolve()
+    )
+    assert (
+        Path(command[command.index("--prompts-path") + 1]).resolve()
+        == (tmp_path / "prepared" / "prepared-prompts.jsonl").resolve()
+    )
+    assert Path(kwargs["cwd"]).resolve() == harness.resolve()

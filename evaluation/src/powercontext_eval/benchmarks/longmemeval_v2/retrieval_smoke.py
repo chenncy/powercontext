@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -137,6 +138,9 @@ def run_retrieval_smoke(
     _require_runtime(client, arm)
     started_at = datetime.now(UTC)
     started_ns = time.perf_counter_ns()
+    # Per-execution scope namespace: a run_id alone collides across repeated runs,
+    # experiment arms, and same-basename output directories, silently sharing Scopes.
+    execution_namespace = uuid.uuid4().hex
     prepared = prepare_smoke_run(
         data_root=data_root,
         dataset_lock=dataset_lock,
@@ -167,9 +171,9 @@ def run_retrieval_smoke(
 
     root_scope = _create_scope(
         client,
-        title=f"LongMemEval-V2 retrieval smoke {normalized_run_id}",
+        title=f"LongMemEval-V2 retrieval smoke {normalized_run_id} ({arm.arm_id})",
         summary="Retrieval-only fixed smoke subset; no Reader, Judge, or scoring.",
-        idempotency_seed=f"{normalized_run_id}:root",
+        idempotency_seed=f"{normalized_run_id}:{arm.arm_id}:{execution_namespace}:root",
         parent_scope_id=None,
     )
     group_scopes: dict[str, str] = {}
@@ -179,7 +183,7 @@ def run_retrieval_smoke(
             client,
             title=f"LongMemEval-V2 haystack {sequence}: {group.digest[:12]}",
             summary=f"Isolated haystack with {len(group.trajectory_ids)} trajectories.",
-            idempotency_seed=f"{normalized_run_id}:haystack:{group.digest}",
+            idempotency_seed=f"{normalized_run_id}:{arm.arm_id}:{execution_namespace}:haystack:{group.digest}",
             parent_scope_id=root_scope,
         )
         group_scopes[group.digest] = scope_id
@@ -207,6 +211,7 @@ def run_retrieval_smoke(
             "schema": RETRIEVAL_MANIFEST_SCHEMA,
             "classification": "smoke-subset-retrieval-only",
             "run_id": normalized_run_id,
+            "execution_namespace": execution_namespace,
             "started_at": started_at.isoformat(),
             "experiment_arm": arm_manifest_record(arm),
             "revisions": {

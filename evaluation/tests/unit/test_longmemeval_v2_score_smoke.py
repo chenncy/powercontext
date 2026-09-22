@@ -24,6 +24,7 @@ import pytest
 
 from powercontext_eval.benchmarks.longmemeval_v2 import score_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.catalog import SmokeSelection
+from powercontext_eval.benchmarks.longmemeval_v2.costs import ModelPricePolicy
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeError, run_score_smoke
 
 
@@ -161,3 +162,83 @@ def test_score_smoke_refuses_to_overwrite_before_reading_inputs(tmp_path: Path) 
             harness_root=tmp_path / "missing-harness",
             output_dir=output,
         )
+
+
+class UnparseableJudgementMetrics(FakeMetrics):
+    """The pinned parser rejects the Judge text; the completed call's usage must survive."""
+
+    def _parse_llm_binary_judgement(self, text: str) -> tuple[int, str]:
+        raise ValueError("judgement is malformed")
+
+
+class CacheSplitJudge:
+    """A Judge stub whose responses carry usage with the cache split an explicit policy prices."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[dict[str, object]]]] = []
+
+    def complete(self, *, system: str, content: list[dict[str, object]]) -> Mapping[str, object]:
+        self.calls.append((system, content))
+        return {
+            "content": [{"type": "text", "text": "truncated judgement"}],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "input_cache_hit_tokens": 4,
+                "input_cache_miss_tokens": 6,
+            },
+        }
+
+
+def test_score_smoke_preserves_judge_usage_when_the_judgement_cannot_be_parsed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    reader, data, manifest = score_fixture(tmp_path)
+    output = tmp_path / "score"
+    judge = CacheSplitJudge()
+    monkeypatch.setattr(score_smoke, "validate_harness_checkout", lambda root: None)
+    monkeypatch.setattr(score_smoke, "_load_metrics", lambda root: UnparseableJudgementMetrics())
+    allow_validated_catalog(monkeypatch)
+    policy = ModelPricePolicy(
+        provider="deepseek-openai",
+        model="test-judge",
+        currency="USD",
+        input_cache_hit_price_per_million=1.0,
+        input_cache_miss_price_per_million=2.0,
+        output_price_per_million=3.0,
+        price_policy_revision="test-prices",
+    )
+
+    with pytest.raises(ScoreSmokeError, match="Scoring failed for 4"):
+        run_score_smoke(
+            reader_dir=reader,
+            data_root=data,
+            dataset_lock=tmp_path / "dataset-lock.json",
+            smoke_manifest=manifest,
+            harness_root=tmp_path / "harness",
+            output_dir=output,
+            judge_model="test-judge",
+            judge_price_policy=policy,
+            judge_transport=judge,
+        )
+
+    assert len(judge.calls) == 4
+    summary = json.loads((output / "score-summary.json").read_text(encoding="utf-8"))
+    assert summary["judge_calls"] == 4
+    assert summary["judge_usage"] == {
+        "input_tokens": 40,
+        "output_tokens": 8,
+        "input_cache_hit_tokens": 16,
+        "input_cache_miss_tokens": 24,
+    }
+    assert summary["judge_cost"]["cost_usd"] == pytest.approx(88 / 1_000_000)
+    failures = [json.loads(line) for line in (output / "score-failures.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(failures) == 4
+    assert all(failure["error_type"] == "JudgeJudgementError" for failure in failures)
+    assert all(
+        failure["judge_usage"]
+        == {"input_tokens": 10, "output_tokens": 2, "input_cache_hit_tokens": 4, "input_cache_miss_tokens": 6}
+        for failure in failures
+    )
+    assert all(isinstance(failure["judge_latency_ms"], (int, float)) for failure in failures)
+    assert not (output / "judge-outputs.jsonl").read_text(encoding="utf-8")

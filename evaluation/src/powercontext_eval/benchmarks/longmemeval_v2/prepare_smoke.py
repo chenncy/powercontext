@@ -60,6 +60,11 @@ def prepare_reader_inputs_smoke(
 ) -> PreparedPromptRun:
     """Use the pinned harness to truncate context and build deterministic Reader messages."""
 
+    caller_cwd = Path.cwd()
+    retrieval_dir = _resolve_path(retrieval_dir, caller_cwd)
+    harness_root = _resolve_path(harness_root, caller_cwd)
+    harness_python = _resolve_path(harness_python, caller_cwd)
+    output_dir = _resolve_path(output_dir, caller_cwd)
     if output_dir.exists():
         raise PrepareSmokeError(f"Refusing to overwrite prepared prompt artifacts: {output_dir}")
     revision = _nonblank(processor_revision, "processor_revision")
@@ -180,6 +185,10 @@ def _validate_retrieval_artifacts(manifest: dict[str, object], summary: dict[str
     failed = summary.get("failed")
     if question_count != 10 or failed != 0:
         raise PrepareSmokeError("Retrieval artifacts must contain ten successful smoke questions")
+
+
+def _resolve_path(path: Path, caller_cwd: Path) -> Path:
+    return path.resolve() if path.is_absolute() else (caller_cwd / path).resolve()
 
 
 def _load_json(path: Path, label: str) -> dict[str, object]:
