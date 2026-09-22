@@ -264,6 +264,8 @@ def run_smoke(
     summary_path = output_dir / "run-summary.json"
     failures_path = output_dir / "failures.jsonl"
     outputs = {phase: output_dir / PHASE_DIRECTORIES[phase] for phase in PHASES}
+    with failures_path.open("x", encoding="utf-8", newline=""):
+        pass
     _write_json_exclusive(
         manifest_path,
         {
@@ -472,6 +474,7 @@ def run_smoke(
         lambda: active.score(
             reader_dir=outputs["reader"],
             data_root=data_root,
+            dataset_lock=dataset_lock,
             smoke_manifest=smoke_manifest,
             harness_root=harness_root,
             output_dir=outputs["score"],
@@ -624,7 +627,7 @@ def _known_secrets(env_names: tuple[str, ...]) -> tuple[str, ...]:
     """Collect the current secret values used only to redact failure summaries, never recorded."""
 
     values = (os.getenv(name, "") for name in env_names)
-    return tuple(value for value in values if len(value) >= 8)
+    return tuple(value for value in values if value)
 
 
 def _redact(summary: str, secrets: tuple[str, ...]) -> str:

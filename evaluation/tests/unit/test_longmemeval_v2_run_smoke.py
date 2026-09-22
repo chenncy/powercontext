@@ -425,6 +425,23 @@ def test_run_smoke_redacts_a_configured_secret_from_recorded_failures(
     assert "<redacted>" in recorded
 
 
+def test_run_smoke_redacts_a_short_configured_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    short_secret = "abc"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", short_secret)
+    harness = _Harness()
+
+    def leaky_reader(**arguments: Any) -> Any:
+        raise ReaderSmokeError(f"Reader rejected bearer {short_secret}")
+
+    monkeypatch.setattr(harness, "reader", leaky_reader)
+    result = _run(tmp_path, harness, reader_transport=None, judge_transport=None)
+
+    assert result.failed_phase == "reader"
+    recorded = result.failures_path.read_text(encoding="utf-8")
+    assert short_secret not in recorded
+    assert "<redacted>" in recorded
+
+
 def test_run_smoke_redacts_the_powercontext_token_in_model_free_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

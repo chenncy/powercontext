@@ -441,5 +441,7 @@ def test_http_runtime_rejects_credentials_and_plaintext_remote_hosts() -> None:
         PowerContextHTTPRuntime("https://token@example.test", token=None, timeout_seconds=1)
     with pytest.raises(PowerContextMemoryAdapterError, match="unencrypted non-loopback"):
         PowerContextHTTPRuntime("http://example.test", token=None, timeout_seconds=1)
+    with pytest.raises(PowerContextMemoryAdapterError, match="query or fragment"):
+        PowerContextHTTPRuntime("https://example.test/?token=secret", token=None, timeout_seconds=1)
 
     PowerContextHTTPRuntime("http://127.0.0.1:8765", token=None, timeout_seconds=1)

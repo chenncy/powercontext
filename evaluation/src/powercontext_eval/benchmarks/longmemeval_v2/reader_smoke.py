@@ -83,7 +83,14 @@ class AnthropicCompatibleReader:
         timeout_seconds: float,
     ) -> None:
         parsed = urlsplit(base_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             raise ReaderSmokeError("Reader base URL must be an HTTPS URL without credentials")
         if not token.strip():
             raise ReaderSmokeError("Reader token is empty")
@@ -111,7 +118,7 @@ class AnthropicCompatibleReader:
                     "max_tokens": self._max_tokens,
                     "temperature": self._temperature,
                     "system": system,
-                    "messages": [{"role": "user", "content": content}],
+                    "messages": [{"role": "user", "content": _anthropic_content(content)}],
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -153,7 +160,14 @@ class DeepSeekOpenAIReader:
         timeout_seconds: float,
     ) -> None:
         parsed = urlsplit(base_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             raise ReaderSmokeError("Reader base URL must be an HTTPS URL without credentials")
         if not token.strip():
             raise ReaderSmokeError("Reader token is empty")
@@ -173,7 +187,6 @@ class DeepSeekOpenAIReader:
         self._timeout_seconds = timeout_seconds
 
     def complete(self, *, system: str, content: list[dict[str, object]]) -> Mapping[str, object]:
-        user_text = "".join(_nonblank(item.get("text"), "prepared user text") for item in content)
         request = Request(
             self._endpoint,
             data=json.dumps(
@@ -184,7 +197,7 @@ class DeepSeekOpenAIReader:
                     "thinking": {"type": "disabled"},
                     "messages": [
                         {"role": "system", "content": system},
-                        {"role": "user", "content": user_text},
+                        {"role": "user", "content": content},
                     ],
                 },
                 ensure_ascii=False,
@@ -412,12 +425,23 @@ def _run_one(transport: ReaderTransport, prompt: Mapping[str, object]) -> dict[s
         raise ReaderSmokeError("prepared user message is invalid")
     content: list[dict[str, object]] = []
     for item in raw_content:
-        if not isinstance(item, Mapping) or item.get("type") != "text":
-            raise ReaderSmokeError("Reader smoke currently supports text-only prepared prompts")
-        text = item.get("text")
-        if not isinstance(text, str):
-            raise ReaderSmokeError("Reader smoke currently supports text-only prepared prompts")
-        content.append({"type": "text", "text": text})
+        if not isinstance(item, Mapping):
+            raise ReaderSmokeError("prepared user content item must be an object")
+        item_type = item.get("type")
+        if item_type == "text":
+            text = item.get("text")
+            if not isinstance(text, str):
+                raise ReaderSmokeError("prepared text content is invalid")
+            content.append({"type": "text", "text": text})
+            continue
+        if item_type == "image_url":
+            image_url = item.get("image_url")
+            image_value = image_url.get("url") if isinstance(image_url, Mapping) else None
+            if not isinstance(image_value, str):
+                raise ReaderSmokeError("prepared image content is invalid")
+            content.append({"type": "image_url", "image_url": {"url": image_value}})
+            continue
+        raise ReaderSmokeError("prepared user content type is unsupported")
     system_content = system.get("content")
     if not isinstance(system_content, str):
         raise ReaderSmokeError("prepared system message is invalid")
@@ -442,6 +466,29 @@ def _run_one(transport: ReaderTransport, prompt: Mapping[str, object]) -> dict[s
         "stop_reason": response.get("stop_reason"),
         "reader_latency_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
     }
+
+
+def _anthropic_content(content: list[dict[str, object]]) -> list[dict[str, object]]:
+    converted: list[dict[str, object]] = []
+    for item in content:
+        if item.get("type") != "image_url":
+            converted.append(item)
+            continue
+        image_url = item.get("image_url")
+        value = image_url.get("url") if isinstance(image_url, Mapping) else None
+        if not isinstance(value, str) or not value.startswith("data:") or ";base64," not in value:
+            raise ReaderSmokeError("Anthropic-compatible Reader requires base64 data URLs for image content")
+        header, encoded = value.split(",", 1)
+        media_type = header[5 : -len(";base64")]
+        if not media_type or not encoded:
+            raise ReaderSmokeError("prepared image data URL is invalid")
+        converted.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": encoded},
+            }
+        )
+    return converted
 
 
 def _reader_usage(usage: Mapping[Any, Any]) -> dict[str, object]:

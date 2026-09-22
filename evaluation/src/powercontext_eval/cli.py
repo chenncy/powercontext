@@ -422,6 +422,7 @@ def longmemeval_v2_reader_smoke(
 def longmemeval_v2_score_smoke(
     reader_dir: Annotated[Path, typer.Option("--reader-dir")],
     data_root: Annotated[Path, typer.Option("--data-root")],
+    dataset_lock: Annotated[Path, typer.Option("--dataset-lock")],
     smoke_manifest: Annotated[Path, typer.Option("--smoke-manifest")],
     harness_root: Annotated[Path, typer.Option("--harness-root")],
     output_dir: Annotated[Path, typer.Option("--output-dir")],
@@ -440,6 +441,7 @@ def longmemeval_v2_score_smoke(
         result = run_score_smoke(
             reader_dir=reader_dir,
             data_root=data_root,
+            dataset_lock=dataset_lock,
             smoke_manifest=smoke_manifest,
             harness_root=harness_root,
             output_dir=output_dir,

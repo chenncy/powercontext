@@ -23,10 +23,18 @@ import pytest
 
 from powercontext_eval.benchmarks.longmemeval_v2 import reader_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
+    AnthropicCompatibleReader,
     DeepSeekOpenAIReader,
     ReaderSmokeError,
     run_reader_smoke,
 )
+
+
+@pytest.mark.parametrize("reader_type", [AnthropicCompatibleReader, DeepSeekOpenAIReader])
+@pytest.mark.parametrize("url", ["https://provider.example/?token=secret", "https://provider.example/#token"])
+def test_reader_rejects_query_and_fragment_urls(reader_type: type[object], url: str) -> None:
+    with pytest.raises(ReaderSmokeError, match="without credentials"):
+        reader_type(url, token="token", model="model", max_tokens=1, temperature=0.0, timeout_seconds=1)  # type: ignore[operator]
 
 
 class FakeReader:
@@ -167,6 +175,6 @@ def test_deepseek_reader_uses_openai_messages_and_disables_thinking(monkeypatch:
     assert payload["thinking"] == {"type": "disabled"}
     assert payload["messages"] == [
         {"role": "system", "content": "system"},
-        {"role": "user", "content": "question"},
+        {"role": "user", "content": [{"type": "text", "text": "question"}]},
     ]
     assert "super-secret-token" not in request.data.decode()

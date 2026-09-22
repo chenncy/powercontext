@@ -381,6 +381,7 @@ export DEEPSEEK_API_KEY=YOUR_KEY
 uv run --project evaluation powercontext-eval longmemeval-v2 score-smoke \
   --reader-dir /path/to/reader-artifacts \
   --data-root /path/to/longmemeval-v2-data \
+  --dataset-lock evaluation/locks/longmemeval-v2-small-v1.dataset-lock.json \
   --smoke-manifest evaluation/locks/longmemeval-v2-small-v1.smoke.json \
   --harness-root /path/to/LongMemEval-V2 \
   --judge-model deepseek-flash \

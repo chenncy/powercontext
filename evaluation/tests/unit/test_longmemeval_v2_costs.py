@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from powercontext_eval.benchmarks.longmemeval_v2.catalog import SmokeSelection
 from powercontext_eval.benchmarks.longmemeval_v2.costs import (
     CostPolicyError,
     ModelPricePolicy,
@@ -633,9 +635,20 @@ def _run_score(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, policy: Any, 
     reader, data, manifest = _score_fixture(tmp_path)
     monkeypatch.setattr(score_smoke, "validate_harness_checkout", lambda root: None)
     monkeypatch.setattr(score_smoke, "_load_metrics", lambda root: _FakeMetrics())
+    monkeypatch.setattr(score_smoke, "load_dataset_lock", lambda path: SimpleNamespace(tier="small", file_digests={}))
+    monkeypatch.setattr(
+        score_smoke,
+        "LongMemEvalV2Catalog",
+        SimpleNamespace(
+            load=lambda *args, **kwargs: SimpleNamespace(
+                select_smoke=lambda cases: SmokeSelection("small", tuple(cases))
+            )
+        ),
+    )
     result = run_score_smoke(
         reader_dir=reader,
         data_root=data,
+        dataset_lock=tmp_path / "dataset-lock.json",
         smoke_manifest=manifest,
         harness_root=tmp_path / "harness",
         output_dir=tmp_path / "score",

@@ -775,6 +775,8 @@ def _validate_transport(base_url: str) -> None:
         raise PowerContextMemoryAdapterError("base_url must be an absolute HTTP(S) URL")
     if parsed.username is not None or parsed.password is not None:
         raise PowerContextMemoryAdapterError("base_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise PowerContextMemoryAdapterError("base_url must not contain query or fragment data")
     if parsed.scheme == "https":
         return
     hostname = parsed.hostname

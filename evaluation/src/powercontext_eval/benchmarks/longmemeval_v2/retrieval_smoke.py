@@ -465,7 +465,12 @@ def _load_questions(
         domain = row.get("domain")
         if domain not in {"web", "enterprise"}:
             raise RetrievalSmokeError(f"Selected question has invalid domain: {question_id}")
-        text, image = _question_components(row.get("question"), question_id)
+        text, image = _question_components(
+            row.get("question"),
+            row.get("image"),
+            data_root=path.parent,
+            question_id=question_id,
+        )
         found[question_id] = RetrievalQuestion(
             question_id=question_id,
             domain=cast("Literal['web', 'enterprise']", domain),
@@ -526,15 +531,31 @@ def _load_groups(
     return groups, {question_id: by_digest[digest] for question_id, digest in question_digest.items()}
 
 
-def _question_components(value: object, question_id: str) -> tuple[str, str | None]:
+def _question_components(
+    value: object,
+    raw_image: object,
+    *,
+    data_root: Path,
+    question_id: str,
+) -> tuple[str, str | None]:
+    text: object = None
     if isinstance(value, str) and value.strip():
-        return value, None
+        text = value
     if isinstance(value, Mapping):
         text = value.get("text")
-        image = value.get("image")
-        if isinstance(text, str) and text.strip() and isinstance(image, str) and image.strip():
-            return text, image
-    raise RetrievalSmokeError(f"Selected question has invalid text/image content: {question_id}")
+        raw_image = value.get("image", raw_image)
+    if not isinstance(text, str) or not text.strip():
+        raise RetrievalSmokeError(f"Selected question has invalid text content: {question_id}")
+    if raw_image is None:
+        return text, None
+    if not isinstance(raw_image, str) or not raw_image.strip():
+        raise RetrievalSmokeError(f"Selected question has invalid image content: {question_id}")
+    image_path = Path(raw_image)
+    if not image_path.is_absolute():
+        image_path = data_root / image_path
+    if not image_path.is_file():
+        raise RetrievalSmokeError(f"Selected question image is missing: {question_id}")
+    return text, str(image_path.resolve())
 
 
 def _jsonl(path: Path, label: str, *, expected_digest: str) -> Iterator[dict[str, object]]:

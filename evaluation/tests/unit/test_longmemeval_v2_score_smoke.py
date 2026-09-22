@@ -17,11 +17,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from powercontext_eval.benchmarks.longmemeval_v2 import score_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.catalog import SmokeSelection
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeError, run_score_smoke
 
 
@@ -101,16 +103,31 @@ def score_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return reader, data, manifest
 
 
+def allow_validated_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(score_smoke, "load_dataset_lock", lambda path: SimpleNamespace(tier="small", file_digests={}))
+    monkeypatch.setattr(
+        score_smoke,
+        "LongMemEvalV2Catalog",
+        SimpleNamespace(
+            load=lambda *args, **kwargs: SimpleNamespace(
+                select_smoke=lambda cases: SmokeSelection("small", tuple(cases))
+            )
+        ),
+    )
+
+
 def test_score_smoke_keeps_gold_only_in_local_scoring_inputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     reader, data, manifest = score_fixture(tmp_path)
     output = tmp_path / "score"
     judge = FakeJudge()
     monkeypatch.setattr(score_smoke, "validate_harness_checkout", lambda root: None)
     monkeypatch.setattr(score_smoke, "_load_metrics", lambda root: FakeMetrics())
+    allow_validated_catalog(monkeypatch)
 
     result = run_score_smoke(
         reader_dir=reader,
         data_root=data,
+        dataset_lock=tmp_path / "dataset-lock.json",
         smoke_manifest=manifest,
         harness_root=tmp_path / "harness",
         output_dir=output,
@@ -139,6 +156,7 @@ def test_score_smoke_refuses_to_overwrite_before_reading_inputs(tmp_path: Path) 
         run_score_smoke(
             reader_dir=tmp_path / "missing",
             data_root=tmp_path / "missing-data",
+            dataset_lock=tmp_path / "missing-lock",
             smoke_manifest=tmp_path / "missing-smoke",
             harness_root=tmp_path / "missing-harness",
             output_dir=output,

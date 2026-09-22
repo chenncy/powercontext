@@ -28,7 +28,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from powercontext_eval.benchmarks.longmemeval_v2.catalog import load_smoke_manifest, validate_harness_checkout
+from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
+    LongMemEvalV2Catalog,
+    SmokeSelection,
+    load_dataset_lock,
+    load_smoke_manifest,
+    validate_harness_checkout,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.costs import (
     ModelPricePolicy,
     cost_policy_record,
@@ -87,6 +93,7 @@ def run_score_smoke(
     *,
     reader_dir: Path,
     data_root: Path,
+    dataset_lock: Path,
     smoke_manifest: Path,
     harness_root: Path,
     output_dir: Path,
@@ -104,16 +111,23 @@ def run_score_smoke(
     if output_dir.exists():
         raise ScoreSmokeError(f"Refusing to overwrite score artifacts: {output_dir}")
     validate_harness_checkout(harness_root)
-    selection = load_smoke_manifest(smoke_manifest)
+    lock = load_dataset_lock(dataset_lock)
+    declared_selection = load_smoke_manifest(smoke_manifest)
+    if declared_selection.tier != lock.tier:
+        raise ScoreSmokeError("Smoke manifest tier does not match the dataset lock")
+    catalog = LongMemEvalV2Catalog.load(
+        data_root,
+        tier=declared_selection.tier,
+        expected_digests=lock.file_digests,
+    )
+    selection = catalog.select_smoke(declared_selection.cases)
     reader_manifest = _load_json(reader_dir / "reader-manifest.json", "reader manifest")
     reader_summary = _load_json(reader_dir / "reader-summary.json", "reader summary")
     outputs_path = reader_dir / "reader-outputs.jsonl"
     if not outputs_path.is_file():
         raise ScoreSmokeError(f"Missing Reader outputs: {outputs_path}")
     _validate_reader_artifacts(reader_manifest, reader_summary)
-    outputs = {row["question_id"]: row for row in _jsonl(outputs_path, "reader output")}
-    if set(outputs) != {case.question_id for case in selection.cases}:
-        raise ScoreSmokeError("Reader outputs do not match the fixed smoke question ids")
+    outputs = _reader_outputs(outputs_path, selection)
 
     metrics = _load_metrics(harness_root)
     if judge_transport is None:
@@ -180,7 +194,8 @@ def run_score_smoke(
     judge_cache_miss_tokens = 0
     judge_cache_split_reported = True
     for sequence, question in enumerate(questions, start=1):
-        reader = outputs[question["id"]]
+        question_id = _nonblank(question.get("id"), "question.id")
+        reader = outputs[question_id]
         try:
             score_input, result, judge_output = _score_one(
                 metrics, question, reader, sequence=sequence, transport=transport
@@ -393,6 +408,23 @@ def _selected_questions(path: Path, selection: object) -> tuple[dict[str, object
     if missing:
         raise ScoreSmokeError(f"Missing smoke questions for scoring: {missing}")
     return tuple(found[question_id] for question_id in ids)
+
+
+def _reader_outputs(path: Path, selection: SmokeSelection) -> dict[str, dict[str, object]]:
+    expected = {case.question_id for case in selection.cases}
+    outputs: dict[str, dict[str, object]] = {}
+    for row in _jsonl(path, "reader output"):
+        question_id = row.get("question_id")
+        if not isinstance(question_id, str) or not question_id.strip():
+            raise ScoreSmokeError("Reader output has an invalid question_id")
+        if question_id in outputs:
+            raise ScoreSmokeError(f"Reader outputs contain a duplicate question_id: {question_id}")
+        if question_id not in expected:
+            raise ScoreSmokeError(f"Reader output is not part of the fixed smoke subset: {question_id}")
+        outputs[question_id] = row
+    if set(outputs) != expected:
+        raise ScoreSmokeError("Reader outputs do not match the fixed smoke question ids")
+    return outputs
 
 
 def _validate_reader_artifacts(manifest: dict[str, object], summary: dict[str, object]) -> None:
