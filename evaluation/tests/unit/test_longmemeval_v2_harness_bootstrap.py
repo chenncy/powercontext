@@ -106,6 +106,15 @@ class FakePowerContext:
             ]
         }
 
+    def prepare_context(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        content = "The remembered assignment procedure."
+        return {
+            "schema": "powercontext.prepared-context.v1",
+            "status": "ready",
+            "content": content,
+            "content_bytes": len(content.encode()),
+        }
+
 
 def test_bootstrap_registers_adapter_and_runs_harness_insert_query_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -19,11 +19,17 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from powercontext_eval.benchmarks.longmemeval_v2 import retrieval_smoke
-from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, run_retrieval_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.arms import ExperimentArmError
+from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import (
+    RetrievalCapabilityError,
+    RetrievalSmokeError,
+    run_retrieval_smoke,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import PreparedSmokeRun
 
 
@@ -42,6 +48,7 @@ class FakeRetrievalRuntime:
     def get_capabilities(self) -> Mapping[str, object]:
         return {
             "search_modes": ["auto", "fts"],
+            "context_versions": ["powercontext.prepared-context.v1"],
             "source_types": ["content"],
             "artifact_families": ["memory"],
         }
@@ -79,6 +86,7 @@ class FakeRetrievalRuntime:
         scope_id = str(request["scope_id"])
         text = self.text_by_scope[scope_id][0]
         return {
+            "mode": request.get("mode"),
             "hits": [
                 {
                     "text": text,
@@ -88,7 +96,20 @@ class FakeRetrievalRuntime:
                         "entry_version_id": f"hit-{scope_id}-v1",
                     },
                 }
-            ]
+            ],
+        }
+
+    def prepare_context(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        request = dict(payload)
+        scope_id = str(request["scope_id"])
+        maximum = request["max_bytes"]
+        assert isinstance(maximum, int) and not isinstance(maximum, bool)
+        content = self.text_by_scope[scope_id][0][:maximum]
+        return {
+            "schema": "powercontext.prepared-context.v1",
+            "status": "ready",
+            "content": content,
+            "content_bytes": len(content.encode()),
         }
 
 
@@ -184,7 +205,12 @@ def fake_preflight(**kwargs: object) -> PreparedSmokeRun:
 
 
 def run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: FakeRetrievalRuntime, *, shared: bool = False
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: FakeRetrievalRuntime,
+    *,
+    shared: bool = False,
+    **overrides: object,
 ) -> Path:
     data_root, smoke_manifest = write_inputs(tmp_path, shared_haystack=shared)
     output_dir = tmp_path / "output"
@@ -197,17 +223,19 @@ def run(
         ).hexdigest(),
     }
     monkeypatch.setattr(retrieval_smoke, "load_dataset_lock", lambda path: SimpleNamespace(file_digests=digests))
-    run_retrieval_smoke(
-        data_root=data_root,
-        dataset_lock=tmp_path / "dataset-lock.json",
-        harness_root=tmp_path / "harness",
-        smoke_manifest=smoke_manifest,
-        output_dir=output_dir,
-        run_id="test-run",
-        powercontext_revision="powercontext-sha",
-        integration_revision="integration-sha",
-        runtime=runtime,
-    )
+    arguments: dict[str, Any] = {
+        "data_root": data_root,
+        "dataset_lock": tmp_path / "dataset-lock.json",
+        "harness_root": tmp_path / "harness",
+        "smoke_manifest": smoke_manifest,
+        "output_dir": output_dir,
+        "run_id": "test-run",
+        "powercontext_revision": "powercontext-sha",
+        "integration_revision": "integration-sha",
+        "runtime": runtime,
+    }
+    arguments.update(overrides)
+    run_retrieval_smoke(**arguments)
     return output_dir
 
 
@@ -298,5 +326,192 @@ def test_refuses_to_overwrite_before_contacting_powercontext(tmp_path: Path) -> 
             integration_revision="adapter",
             runtime=runtime,
         )
+
+    assert runtime.scopes == []
+
+
+class HybridRetrievalRuntime(FakeRetrievalRuntime):
+    """A Server whose capabilities advertise hybrid search; responses echo the requested mode."""
+
+    def get_capabilities(self) -> Mapping[str, object]:
+        return {
+            "search_modes": ["auto", "fts", "vector", "hybrid"],
+            "source_types": ["content"],
+            "artifact_families": ["memory"],
+        }
+
+
+class SilentFtsFallbackRuntime(HybridRetrievalRuntime):
+    """A Server that claims hybrid support but silently executes fts search."""
+
+    def search_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        response = dict(super().search_memory(payload))
+        response["mode"] = "fts"
+        return response
+
+
+class MisreportingHybridRuntime(FakeRetrievalRuntime):
+    """A Server that reports hybrid execution for an explicitly requested fts search."""
+
+    def search_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        response = dict(super().search_memory(payload))
+        response["mode"] = "hybrid"
+        return response
+
+
+def test_default_arm_keeps_the_previous_fts_behaviour(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRetrievalRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime)
+
+    assert [request["mode"] for request in runtime.searches] == ["fts", "fts"]
+    manifest = json.loads((output_dir / "retrieval-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["experiment_arm"] == {
+        "id": "current-memory-fts-v1",
+        "retrieval_strategy": "memory-search",
+        "search_mode": "fts",
+        "memory_projection": "deterministic-compact-v1",
+        "query_projection": "question-text-v1",
+        "prepared_context_max_bytes": None,
+        "temporal_filter": None,
+        "task_lens": None,
+    }
+    results = read_jsonl(output_dir / "retrieval-results.jsonl")
+    assert all(result["search_mode"] == {"requested": "fts", "actual": "fts"} for result in results)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["experiment_arm"]["id"] == "current-memory-fts-v1"
+
+
+def test_hybrid_arm_searches_with_hybrid_mode_and_records_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = HybridRetrievalRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime, experiment_arm="current-memory-hybrid-v1")
+
+    assert [request["mode"] for request in runtime.searches] == ["hybrid", "hybrid"]
+    manifest = json.loads((output_dir / "retrieval-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["experiment_arm"]["id"] == "current-memory-hybrid-v1"
+    assert manifest["runtime"]["search_mode"] == "hybrid"
+    results = read_jsonl(output_dir / "retrieval-results.jsonl")
+    assert all(result["status"] == "succeeded" for result in results)
+    assert all(result["search_mode"] == {"requested": "hybrid", "actual": "hybrid"} for result in results)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["experiment_arm"]["id"] == "current-memory-hybrid-v1"
+    assert summary["succeeded"] == 2
+
+
+def test_query_time_compact_arm_uses_prepared_context_without_memory_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FakeRetrievalRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime, experiment_arm="query-time-compact-v1")
+
+    assert runtime.searches == []
+    manifest = json.loads((output_dir / "retrieval-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["experiment_arm"]["id"] == "query-time-compact-v1"
+    assert manifest["runtime"]["query_strategy"] == "prepared-context"
+    assert manifest["runtime"]["prepared_context_max_bytes"] == 8_000
+    results = read_jsonl(output_dir / "retrieval-results.jsonl")
+    assert all(result["status"] == "succeeded" for result in results)
+    assert all(result["search_mode"] == {"requested": None, "actual": None} for result in results)
+    contexts = [result["memory_context"] for result in results]
+    assert all(isinstance(context, list) and len(context) == 1 for context in contexts)
+
+
+def test_query_time_compact_arm_requires_prepared_context_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MissingPreparedContextRuntime(FakeRetrievalRuntime):
+        def get_capabilities(self) -> Mapping[str, object]:
+            capabilities = dict(super().get_capabilities())
+            capabilities["context_versions"] = []
+            return capabilities
+
+    runtime = MissingPreparedContextRuntime()
+    with pytest.raises(RetrievalCapabilityError, match="does not support PreparedContext"):
+        run(tmp_path, monkeypatch, runtime, experiment_arm="query-time-compact-v1")
+
+    assert runtime.captures == []
+    assert runtime.memories == []
+
+
+def test_write_time_l0_l1_arm_ingests_two_entries_per_trajectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FakeRetrievalRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime, experiment_arm="write-time-l0-l1-v1")
+
+    assert len(runtime.memories) == 4
+    assert sum(str(memory["text"]).startswith("LongMemEval-V2 deterministic L0") for memory in runtime.memories) == 2
+    assert sum(str(memory["text"]).startswith("LongMemEval-V2 deterministic L1") for memory in runtime.memories) == 2
+    manifest = json.loads((output_dir / "retrieval-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["experiment_arm"]["memory_projection"] == "deterministic-l0-l1-v1"
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["succeeded"] == 2
+
+
+def test_task_lensed_arm_uses_a_deterministic_question_only_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FakeRetrievalRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime, experiment_arm="task-lensed-selection-v1")
+
+    assert len(runtime.searches) == 2
+    assert runtime.searches[0]["query"] == "enterprise evidence"
+    assert runtime.searches[1]["query"] == "web evidence"
+    manifest = json.loads((output_dir / "retrieval-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["experiment_arm"]["task_lens"] == "question-keywords-v1"
+
+
+def test_hybrid_arm_fails_before_ingestion_when_the_server_lacks_the_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FakeRetrievalRuntime()  # capabilities advertise only auto and fts
+
+    with pytest.raises(RetrievalCapabilityError, match="does not support hybrid Memory search"):
+        run(tmp_path, monkeypatch, runtime, experiment_arm="current-memory-hybrid-v1")
+
+    assert runtime.scopes == []
+    assert runtime.captures == []
+    assert not (tmp_path / "output").exists()
+
+
+def test_hybrid_arm_records_an_integrity_failure_when_the_server_executed_fts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = SilentFtsFallbackRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime, experiment_arm="current-memory-hybrid-v1")
+
+    results = read_jsonl(output_dir / "retrieval-results.jsonl")
+    assert all(result["status"] == "failed" for result in results)
+    assert all(result["search_mode"] == {"requested": "hybrid", "actual": "fts"} for result in results)
+    failures = read_jsonl(output_dir / "failures.jsonl")
+    assert [failure["category"] for failure in failures] == ["integrity", "integrity"]
+    assert all(failure["error_type"] == "PowerContextMemoryModeError" for failure in failures)
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["succeeded"] == 0
+    assert summary["failed"] == 2
+
+
+def test_fts_arm_records_an_integrity_failure_when_the_server_executed_hybrid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = MisreportingHybridRuntime()
+    output_dir = run(tmp_path, monkeypatch, runtime, experiment_arm="current-memory-fts-v1")
+
+    results = read_jsonl(output_dir / "retrieval-results.jsonl")
+    assert all(result["status"] == "failed" for result in results)
+    assert all(result["search_mode"] == {"requested": "fts", "actual": "hybrid"} for result in results)
+    failures = read_jsonl(output_dir / "failures.jsonl")
+    assert [failure["category"] for failure in failures] == ["integrity", "integrity"]
+    summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["succeeded"] == 0
+    assert summary["failed"] == 2
+
+
+def test_rejects_an_unregistered_experiment_arm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = FakeRetrievalRuntime()
+
+    with pytest.raises(ExperimentArmError, match="unknown experiment arm"):
+        run(tmp_path, monkeypatch, runtime, experiment_arm="l0-persistent-v1")
 
     assert runtime.scopes == []

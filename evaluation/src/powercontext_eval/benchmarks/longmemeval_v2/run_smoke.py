@@ -27,12 +27,24 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 from urllib.parse import urlsplit, urlunsplit
 
-from powercontext_eval.benchmarks.longmemeval_v2.adapter import PowerContextMemoryAdapterError
+from powercontext_eval.benchmarks.longmemeval_v2.adapter import (
+    PowerContextMemoryAdapterError,
+    PowerContextMemoryModeError,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.arms import (
+    ExperimentArm,
+    arm_manifest_record,
+    resolve_experiment_arm,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
     UPSTREAM_HARNESS_COMMIT,
     LongMemEvalV2CatalogError,
     LongMemEvalV2EnvironmentError,
     LongMemEvalV2InputError,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.costs import (
+    ModelPricePolicy,
+    cost_policy_record,
 )
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import (
     DEFAULT_PROCESSOR_MODEL,
@@ -59,6 +71,7 @@ from powercontext_eval.benchmarks.longmemeval_v2.replay_score import (
 )
 from powercontext_eval.benchmarks.longmemeval_v2.report import build_report
 from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import (
+    RetrievalCapabilityError,
     RetrievalSmokeError,
     RetrievalSmokeRun,
     RetrievalSmokeRuntime,
@@ -128,6 +141,10 @@ def classify_error(error: BaseException) -> ErrorClass:
         return "infrastructure"
     if isinstance(error, LongMemEvalV2CatalogError):
         return "integrity"
+    if isinstance(error, PowerContextMemoryModeError):
+        return "integrity"
+    if isinstance(error, RetrievalCapabilityError):
+        return "infrastructure"
     if isinstance(error, PowerContextMemoryAdapterError):
         return "infrastructure"
     if isinstance(error, PrepareSmokeError):
@@ -159,7 +176,7 @@ def run_smoke(
     memory_context_max_tokens: int = 200_000,
     powercontext_base_url: str = "http://127.0.0.1:8000",
     powercontext_token_env: str = "POWERCONTEXT_TOKEN",
-    search_mode: str = "fts",
+    experiment_arm: str | ExperimentArm | None = None,
     search_limit: int = 10,
     timeout_seconds: float = 30.0,
     reader_provider: str = "deepseek-openai",
@@ -177,6 +194,8 @@ def run_smoke(
     judge_max_tokens: int = 256,
     judge_temperature: float = 0.0,
     judge_timeout_seconds: float = 120.0,
+    reader_price_policy: ModelPricePolicy | None = None,
+    judge_price_policy: ModelPricePolicy | None = None,
     skip_reader: bool = False,
     skip_score: bool = False,
     stages: SmokeStages | None = None,
@@ -192,14 +211,13 @@ def run_smoke(
     integration_ref = _nonblank(integration_revision, "integration_revision")
     processor_ref = _nonblank(processor_revision, "processor_revision")
     processor_name = _nonblank(processor_model, "processor_model")
+    arm = resolve_experiment_arm(experiment_arm)
     if skip_reader:
         skip_score = True
     if reader_provider not in {"anthropic-compatible", "deepseek-openai"}:
         raise RunSmokeError("reader_provider must be anthropic-compatible or deepseek-openai")
     if judge_provider != "deepseek-openai":
         raise RunSmokeError("judge_provider must be deepseek-openai")
-    if search_mode not in {"auto", "fts"}:
-        raise RunSmokeError("search_mode must be auto or fts")
     if isinstance(search_limit, bool) or not 1 <= search_limit <= 50:
         raise RunSmokeError("search_limit must be from 1 through 50")
     if isinstance(memory_context_max_tokens, bool) or memory_context_max_tokens <= 0:
@@ -255,6 +273,7 @@ def run_smoke(
             "started_at": started_at.isoformat(),
             "phases": {phase: PHASE_DIRECTORIES[phase] for phase in PHASES},
             "modes": {"reader": not skip_reader, "score": not skip_score},
+            "experiment_arm": arm_manifest_record(arm),
             "inputs": {
                 "data_root": str(data_root.resolve()),
                 "dataset_lock": {"path": str(dataset_lock.resolve()), "content_sha256": lock_digest},
@@ -270,7 +289,7 @@ def run_smoke(
             "powercontext": {
                 "base_url": base_url,
                 "token_env": resolved_powercontext_token_env,
-                "search_mode": search_mode,
+                "search_mode": arm.search_mode,
                 "search_limit": search_limit,
                 "timeout_seconds": timeout_seconds,
             },
@@ -297,6 +316,10 @@ def run_smoke(
                 "timeout_seconds": judge_timeout_seconds,
             },
             "revisions": {"powercontext": powercontext_ref, "integration": integration_ref},
+            "cost_policy": {
+                "reader": cost_policy_record(reader_price_policy),
+                "judge": cost_policy_record(judge_price_policy),
+            },
             "privacy": {
                 "credentials": "resolved-from-environment-at-runtime-never-recorded",
                 "reference_answers": "never-read-by-the-adapter-retrieval-prepare-or-reader-stages",
@@ -402,7 +425,7 @@ def run_smoke(
             integration_revision=integration_ref,
             base_url=powercontext_base_url,
             token_env=resolved_powercontext_token_env,
-            search_mode=search_mode,
+            experiment_arm=arm,
             search_limit=search_limit,
             timeout_seconds=timeout_seconds,
             runtime=runtime,
@@ -437,6 +460,7 @@ def run_smoke(
             max_tokens=reader_max_tokens,
             temperature=reader_temperature,
             timeout_seconds=reader_timeout_seconds,
+            price_policy=reader_price_policy,
             transport=reader_transport,
         ),
     ):
@@ -457,6 +481,7 @@ def run_smoke(
             judge_max_tokens=judge_max_tokens,
             judge_temperature=judge_temperature,
             judge_timeout_seconds=judge_timeout_seconds,
+            judge_price_policy=judge_price_policy,
             judge_transport=judge_transport,
         ),
     ):

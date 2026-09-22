@@ -29,6 +29,11 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from powercontext_eval.benchmarks.longmemeval_v2.catalog import load_smoke_manifest, validate_harness_checkout
+from powercontext_eval.benchmarks.longmemeval_v2.costs import (
+    ModelPricePolicy,
+    cost_policy_record,
+    usage_cost_block,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_MODEL,
@@ -91,6 +96,7 @@ def run_score_smoke(
     judge_max_tokens: int = 256,
     judge_temperature: float = 0.0,
     judge_timeout_seconds: float = 120.0,
+    judge_price_policy: ModelPricePolicy | None = None,
     judge_transport: ReaderTransport | None = None,
 ) -> ScoreSmokeRun:
     """Score ten Reader answers and call an LLM Judge only for upstream LLM metric types."""
@@ -156,6 +162,7 @@ def run_score_smoke(
                 "max_tokens": judge_max_tokens,
                 "temperature": judge_temperature,
             },
+            "cost_policy": cost_policy_record(judge_price_policy),
         },
     )
     _create_empty(inputs_path)
@@ -169,6 +176,9 @@ def run_score_smoke(
     judge_calls = 0
     judge_input_tokens = 0
     judge_output_tokens = 0
+    judge_cache_hit_tokens = 0
+    judge_cache_miss_tokens = 0
+    judge_cache_split_reported = True
     for sequence, question in enumerate(questions, start=1):
         reader = outputs[question["id"]]
         try:
@@ -197,6 +207,13 @@ def run_score_smoke(
             if isinstance(usage, Mapping):
                 judge_input_tokens += _nonnegative_int(usage.get("input_tokens"))
                 judge_output_tokens += _nonnegative_int(usage.get("output_tokens"))
+                hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
+                miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
+                if hit is None or miss is None:
+                    judge_cache_split_reported = False
+                else:
+                    judge_cache_hit_tokens += hit
+                    judge_cache_miss_tokens += miss
         result_correct = result["correct"]
         if not isinstance(result_correct, bool):
             raise TypeError("score result correct field must be a boolean")
@@ -214,7 +231,22 @@ def run_score_smoke(
             "failed": failed,
             "accuracy": None if failed else correct / total,
             "judge_calls": judge_calls,
-            "judge_usage": {"input_tokens": judge_input_tokens, "output_tokens": judge_output_tokens},
+            "judge_usage": _judge_usage_totals(
+                input_tokens=judge_input_tokens,
+                output_tokens=judge_output_tokens,
+                cache_hit_tokens=judge_cache_hit_tokens,
+                cache_miss_tokens=judge_cache_miss_tokens,
+                cache_split_reported=judge_cache_split_reported,
+            ),
+            "judge_cost": usage_cost_block(
+                judge_price_policy,
+                provider="deepseek-openai",
+                model=_nonblank(judge_model, "judge_model"),
+                input_tokens=judge_input_tokens,
+                cache_hit_tokens=judge_cache_hit_tokens if judge_cache_split_reported else None,
+                cache_miss_tokens=judge_cache_miss_tokens if judge_cache_split_reported else None,
+                output_tokens=judge_output_tokens,
+            ),
             "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
         },
     )
@@ -223,6 +255,40 @@ def run_score_smoke(
     return ScoreSmokeRun(
         output_dir, manifest_path, inputs_path, results_path, judge_outputs_path, failures_path, summary_path
     )
+
+
+def _judge_usage(usage: object) -> dict[str, object]:
+    """Keep the Judge's cache hit/miss split so its cost is priced per token class."""
+
+    if not isinstance(usage, Mapping):
+        return {"input_tokens": 0, "output_tokens": 0}
+    record: dict[str, object] = {
+        "input_tokens": _nonnegative_int(usage.get("input_tokens")),
+        "output_tokens": _nonnegative_int(usage.get("output_tokens")),
+    }
+    hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
+    miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
+    if hit is not None and miss is not None:
+        record["input_cache_hit_tokens"] = hit
+        record["input_cache_miss_tokens"] = miss
+    return record
+
+
+def _judge_usage_totals(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_hit_tokens: int,
+    cache_miss_tokens: int,
+    cache_split_reported: bool,
+) -> dict[str, object]:
+    """Report summed Judge usage, keeping the cache split only when every call reported it."""
+
+    totals: dict[str, object] = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    if cache_split_reported:
+        totals["input_cache_hit_tokens"] = cache_hit_tokens
+        totals["input_cache_miss_tokens"] = cache_miss_tokens
+    return totals
 
 
 def _score_one(
@@ -267,10 +333,7 @@ def _score_one(
             "label": label,
             "reason": reason,
             "response_sha256": hashlib.sha256(judge_text.encode()).hexdigest(),
-            "usage": {
-                "input_tokens": _nonnegative_int(usage.get("input_tokens")) if isinstance(usage, Mapping) else 0,
-                "output_tokens": _nonnegative_int(usage.get("output_tokens")) if isinstance(usage, Mapping) else 0,
-            },
+            "usage": _judge_usage(usage),
             "judge_latency_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
         }
         mode = "llm_judge"
@@ -431,3 +494,11 @@ def _nonblank(value: object, label: str) -> str:
 
 def _nonnegative_int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    """Keep an absent cache field distinguishable from a reported zero."""
+
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None

@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -36,6 +37,41 @@ DEFAULT_MEMORY_KIND = "longmemeval_v2_trajectory"
 DEFAULT_SOURCE_CHUNK_BYTES = 180_000
 MAX_SOURCE_CHUNK_BYTES = 190_000
 MAX_MEMORY_TEXT_BYTES = 8_192
+SEARCH_MODES = ("auto", "fts", "vector", "hybrid")
+QUERY_STRATEGIES = ("memory-search", "prepared-context")
+PREPARED_CONTEXT_SCHEMA = "powercontext.prepared-context.v1"
+MEMORY_PROJECTIONS = ("deterministic-compact-v1", "deterministic-l0-l1-v1")
+TASK_LENSES = ("question-keywords-v1",)
+_TASK_LENS_STOPWORDS = frozenset(
+    {
+        "about",
+        "and",
+        "after",
+        "are",
+        "before",
+        "could",
+        "from",
+        "for",
+        "have",
+        "into",
+        "should",
+        "that",
+        "the",
+        "their",
+        "there",
+        "these",
+        "they",
+        "this",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "would",
+        "your",
+        "you",
+    }
+)
 _HARNESS_RUNTIME_KEYS = {
     "cancel_event",
     "generation_temperature",
@@ -50,6 +86,10 @@ class PowerContextMemoryAdapterError(RuntimeError):
     """The adapter input, transport, or response violated its contract."""
 
 
+class PowerContextMemoryModeError(PowerContextMemoryAdapterError):
+    """The search response did not execute an explicitly required search mode."""
+
+
 @runtime_checkable
 class PowerContextRuntime(Protocol):
     """Narrow synchronous facade over supported public PowerContext operations."""
@@ -59,6 +99,8 @@ class PowerContextRuntime(Protocol):
     def remember_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]: ...
 
     def search_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]: ...
+
+    def prepare_context(self, payload: Mapping[str, object]) -> Mapping[str, object]: ...
 
 
 class PowerContextHTTPRuntime:
@@ -88,6 +130,9 @@ class PowerContextHTTPRuntime:
 
     def search_memory(self, payload: Mapping[str, object]) -> Mapping[str, object]:
         return self._post("/v1/memory/search", payload, expected_status=200)
+
+    def prepare_context(self, payload: Mapping[str, object]) -> Mapping[str, object]:
+        return self._post("/v1/context/prepare", payload, expected_status=200)
 
     def create_scope(self, payload: Mapping[str, object]) -> Mapping[str, object]:
         return self._post("/v1/scopes", payload, expected_status=201)
@@ -164,6 +209,34 @@ class PowerContextMemory:
             DEFAULT_MEMORY_KIND,
         )
         self.search_mode = _optional_nonblank(self.memory_params.get("search_mode"), "search_mode", "auto")
+        if self.search_mode not in SEARCH_MODES:
+            raise PowerContextMemoryAdapterError(
+                f"search_mode must be one of {', '.join(SEARCH_MODES)}, not {self.search_mode!r}"
+            )
+        self.query_strategy = _optional_nonblank(
+            self.memory_params.get("query_strategy"), "query_strategy", "memory-search"
+        )
+        if self.query_strategy not in QUERY_STRATEGIES:
+            raise PowerContextMemoryAdapterError(
+                f"query_strategy must be one of {', '.join(QUERY_STRATEGIES)}, not {self.query_strategy!r}"
+            )
+        self.prepared_context_max_bytes = _integer(
+            self.memory_params.get("prepared_context_max_bytes", 8_000),
+            "prepared_context_max_bytes",
+            minimum=512,
+            maximum=32_768,
+        )
+        self.memory_projection = _optional_nonblank(
+            self.memory_params.get("memory_projection"), "memory_projection", "deterministic-compact-v1"
+        )
+        if self.memory_projection not in MEMORY_PROJECTIONS:
+            raise PowerContextMemoryAdapterError(
+                f"memory_projection must be one of {', '.join(MEMORY_PROJECTIONS)}, not {self.memory_projection!r}"
+            )
+        task_lens = self.memory_params.get("task_lens")
+        if task_lens is not None and task_lens not in TASK_LENSES:
+            raise PowerContextMemoryAdapterError(f"unsupported task_lens: {task_lens!r}")
+        self.task_lens = cast("str | None", task_lens)
         self.search_limit = _integer(self.memory_params.get("search_limit", 10), "search_limit", minimum=1, maximum=50)
         self.source_chunk_bytes = _integer(
             self.memory_params.get("source_chunk_bytes", DEFAULT_SOURCE_CHUNK_BYTES),
@@ -206,7 +279,7 @@ class PowerContextMemory:
 
         trajectory_id, projected = _project_trajectory(trajectory)
         source_chunks = _utf8_chunks(projected, self.source_chunk_bytes)
-        memory_text = _compact_memory_text(projected)
+        memory_texts = _memory_projection_texts(projected, self.memory_projection)
         digest = f"sha256:{hashlib.sha256(projected.encode()).hexdigest()}"
         started = self._clock_ns()
         capture_ns = 0
@@ -239,17 +312,18 @@ class PowerContextMemory:
                     capture_ns += self._clock_ns() - stage_started
                     source_refs.append(_source_ref(source))
 
-                stage_started = self._clock_ns()
-                memory = self._runtime.remember_memory(
-                    {
-                        "scope_id": self.scope_id,
-                        "kind": self.memory_kind,
-                        "text": memory_text,
-                        "reason": f"LongMemEval-V2 deterministic compact memory for trajectory {trajectory_id}",
-                    }
-                )
-                remember_ns += self._clock_ns() - stage_started
-                memory_citations.append(_memory_citation(memory))
+                for layer, memory_text in memory_texts:
+                    stage_started = self._clock_ns()
+                    memory = self._runtime.remember_memory(
+                        {
+                            "scope_id": self.scope_id,
+                            "kind": self.memory_kind,
+                            "text": memory_text,
+                            "reason": f"LongMemEval-V2 {layer} memory for trajectory {trajectory_id}",
+                        }
+                    )
+                    remember_ns += self._clock_ns() - stage_started
+                    memory_citations.append(_memory_citation(memory))
                 self._inserted_trajectory_ids.add(trajectory_id)
             status = "succeeded"
         except Exception as error:
@@ -263,6 +337,7 @@ class PowerContextMemory:
                     "scope_id": self.scope_id,
                     "trajectory_id": trajectory_id,
                     "trajectory_digest": digest,
+                    "memory_projection": self.memory_projection,
                     "source_chunk_count": len(source_chunks),
                     "memory_entry_count": len(memory_citations),
                     "source_refs": source_refs,
@@ -280,6 +355,7 @@ class PowerContextMemory:
         """Return Memory search hits as LongMemEval-V2 text context items."""
 
         question = _nonblank(query, "query")
+        retrieval_query = _task_lensed_query(question, self.task_lens)
         if query_image is not None and (not isinstance(query_image, str) or not query_image.strip()):
             raise PowerContextMemoryAdapterError("query_image must be null or a non-empty string")
         started = self._clock_ns()
@@ -287,34 +363,49 @@ class PowerContextMemory:
         format_ns = 0
         citations: list[dict[str, object]] = []
         items: list[dict[str, str]] = []
+        actual_mode: str | None = None
         status = "failed"
         failure: str | None = None
+        requested_mode = self.search_mode if self.query_strategy == "memory-search" else None
         try:
             stage_started = self._clock_ns()
-            response = self._runtime.search_memory(
-                {
-                    "scope_id": self.scope_id,
-                    "query": question,
-                    "limit": self.search_limit,
-                    "mode": self.search_mode,
-                }
-            )
-            search_ns = self._clock_ns() - stage_started
+            if self.query_strategy == "prepared-context":
+                response = self._runtime.prepare_context(
+                    {
+                        "scope_id": self.scope_id,
+                        "query": retrieval_query,
+                        "max_bytes": self.prepared_context_max_bytes,
+                    }
+                )
+                search_ns = self._clock_ns() - stage_started
+                items.extend(_prepared_context_items(response, maximum_bytes=self.prepared_context_max_bytes))
+            else:
+                response = self._runtime.search_memory(
+                    {
+                        "scope_id": self.scope_id,
+                        "query": retrieval_query,
+                        "limit": self.search_limit,
+                        "mode": self.search_mode,
+                    }
+                )
+                search_ns = self._clock_ns() - stage_started
+                actual_mode = _response_search_mode(response)
+                _require_requested_mode(self.search_mode, actual_mode)
+                raw_hits = response.get("hits")
+                if not isinstance(raw_hits, list):
+                    raise PowerContextMemoryAdapterError("search response hits must be an array")
+                for index, hit in enumerate(raw_hits):
+                    if not isinstance(hit, Mapping):
+                        raise PowerContextMemoryAdapterError(f"search hit {index} must be an object")
+                    text = hit.get("text")
+                    if not isinstance(text, str) or not text:
+                        raise PowerContextMemoryAdapterError(f"search hit {index} text must be non-empty")
+                    citation = hit.get("citation")
+                    if not isinstance(citation, Mapping):
+                        raise PowerContextMemoryAdapterError(f"search hit {index} citation must be an object")
+                    citations.append(_string_keyed_mapping(citation, f"search hit {index} citation"))
+                    items.append({"type": "text", "value": text})
             stage_started = self._clock_ns()
-            raw_hits = response.get("hits")
-            if not isinstance(raw_hits, list):
-                raise PowerContextMemoryAdapterError("search response hits must be an array")
-            for index, hit in enumerate(raw_hits):
-                if not isinstance(hit, Mapping):
-                    raise PowerContextMemoryAdapterError(f"search hit {index} must be an object")
-                text = hit.get("text")
-                if not isinstance(text, str) or not text:
-                    raise PowerContextMemoryAdapterError(f"search hit {index} text must be non-empty")
-                citation = hit.get("citation")
-                if not isinstance(citation, Mapping):
-                    raise PowerContextMemoryAdapterError(f"search hit {index} citation must be an object")
-                citations.append(_string_keyed_mapping(citation, f"search hit {index} citation"))
-                items.append({"type": "text", "value": text})
             format_ns = self._clock_ns() - stage_started
             status = "succeeded"
             return items
@@ -331,6 +422,10 @@ class PowerContextMemory:
             self._query_context_local.last_query_metadata = {
                 "query_invocation_id": query_invocation_id,
                 "result_count": len(items),
+                "retrieval_strategy": self.query_strategy,
+                "task_lens": self.task_lens,
+                "requested_mode": requested_mode,
+                "actual_mode": actual_mode,
                 "citations": deepcopy(citations),
                 "timings_ms": dict(timings),
             }
@@ -341,7 +436,12 @@ class PowerContextMemory:
                     "scope_id": self.scope_id,
                     "query_invocation_id": query_invocation_id,
                     "query_sha256": hashlib.sha256(question.encode()).hexdigest(),
+                    "retrieval_query_sha256": hashlib.sha256(retrieval_query.encode()).hexdigest(),
                     "query_image_present": query_image is not None,
+                    "retrieval_strategy": self.query_strategy,
+                    "task_lens": self.task_lens,
+                    "requested_mode": requested_mode,
+                    "actual_mode": actual_mode,
                     "result_count": len(items),
                     "citations": citations,
                     "timings_ms": timings,
@@ -470,6 +570,52 @@ def _compact_memory_text(projected: str) -> str:
     return _truncate_utf8_middle("\n".join(lines), MAX_MEMORY_TEXT_BYTES)
 
 
+def _memory_projection_texts(projected: str, projection: str) -> list[tuple[str, str]]:
+    if projection == "deterministic-compact-v1":
+        return [("deterministic compact", _compact_memory_text(projected))]
+    if projection != "deterministic-l0-l1-v1":
+        raise PowerContextMemoryAdapterError(f"unsupported memory projection: {projection}")
+    value = json.loads(projected)
+    if not isinstance(value, dict):
+        raise PowerContextMemoryAdapterError("projected trajectory must be an object")
+    l0 = _truncate_utf8_middle(
+        "\n".join(
+            [
+                "LongMemEval-V2 deterministic L0 trajectory index",
+                f"trajectory_id: {_plain(value.get('id'))}",
+                f"domain: {_plain(value.get('domain'))}",
+                f"environment: {_plain(value.get('environment'))}",
+                f"goal: {_bounded(value.get('goal'), 700)}",
+                f"outcome: {_plain(value.get('outcome'))}",
+            ]
+        ),
+        1_024,
+    )
+    l1 = _compact_memory_text(projected).replace(
+        "LongMemEval-V2 deterministic trajectory memory",
+        "LongMemEval-V2 deterministic L1 trajectory summary",
+        1,
+    )
+    return [("deterministic L0", l0), ("deterministic L1", l1)]
+
+
+def _task_lensed_query(question: str, task_lens: str | None) -> str:
+    if task_lens is None:
+        return question
+    if task_lens != "question-keywords-v1":
+        raise PowerContextMemoryAdapterError(f"unsupported task_lens: {task_lens}")
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", question.lower()):
+        if token in _TASK_LENS_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+        if len(keywords) == 24:
+            break
+    return " ".join(keywords) or question
+
+
 def _plain(value: object) -> str:
     return value if isinstance(value, str) and value else "<none>"
 
@@ -532,6 +678,51 @@ def _memory_citation(response: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(citation, Mapping):
         raise PowerContextMemoryAdapterError("remember response citation must be an object")
     return _string_keyed_mapping(citation, "remember response citation")
+
+
+def _response_search_mode(response: Mapping[str, object]) -> str | None:
+    """Read the server-reported executed mode; the public contract marks it nullable."""
+
+    value = response.get("mode")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _prepared_context_items(response: Mapping[str, object], *, maximum_bytes: int) -> list[dict[str, str]]:
+    """Validate one public PreparedContext response and render upstream text items."""
+
+    if response.get("schema") != PREPARED_CONTEXT_SCHEMA:
+        raise PowerContextMemoryAdapterError("prepared context response has an unsupported schema")
+    status = response.get("status")
+    content = response.get("content")
+    content_bytes = response.get("content_bytes")
+    if isinstance(content_bytes, bool) or not isinstance(content_bytes, int) or content_bytes < 0:
+        raise PowerContextMemoryAdapterError("prepared context content_bytes must be a non-negative integer")
+    if content_bytes > maximum_bytes:
+        raise PowerContextMemoryAdapterError("prepared context exceeded the requested byte budget")
+    if status == "empty":
+        if content is not None or content_bytes != 0:
+            raise PowerContextMemoryAdapterError("empty prepared context must have null content and zero bytes")
+        return []
+    if status != "ready" or not isinstance(content, str) or not content:
+        raise PowerContextMemoryAdapterError("ready prepared context must contain non-empty text")
+    if len(content.encode()) != content_bytes:
+        raise PowerContextMemoryAdapterError("prepared context content_bytes does not match its UTF-8 content")
+    return [{"type": "text", "value": content}]
+
+
+def _require_requested_mode(requested_mode: str, actual_mode: str | None) -> None:
+    """Fail closed when an explicitly requested search mode was not executed.
+
+    ``auto`` delegates the mode choice to the Server and accepts whatever the Server
+    reports. Every explicit mode — the only modes an experiment arm may request — must
+    match the reported mode exactly, so an arm's provenance stays provable and two arms
+    cannot silently execute the same retrieval path.
+    """
+
+    if requested_mode != "auto" and actual_mode != requested_mode:
+        raise PowerContextMemoryModeError(
+            f"{requested_mode} Memory search was requested but the server reported mode {actual_mode!r}"
+        )
 
 
 def _string_keyed_mapping(value: object, label: str) -> dict[str, object]:

@@ -17,12 +17,14 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeAlias, TypeGuard
+from typing import TypeAlias, TypeGuard, cast
 
+from powercontext_eval.benchmarks.longmemeval_v2.costs import model_free_cost_block
 from powercontext_eval.errors import PowerContextEvalError
 
 REPORT_SCHEMA = "powercontext.longmemeval-v2-smoke-report.v1"
@@ -92,6 +94,7 @@ def build_report(*, run_dir: Path, output_dir: Path | None = None) -> ReportRun:
 def _build(run_root: Path, directories: Mapping[str, str]) -> dict[str, object]:
     manifest = _load_json(run_root / "run-manifest.json")
     summary = _load_json(run_root / "run-summary.json")
+    retrieval_manifest = _load_json(run_root / directories["retrieval"] / "retrieval-manifest.json")
     retrieval_summary = _load_json(run_root / directories["retrieval"] / "summary.json")
     prepare_summary = _load_json(run_root / directories["prepare"] / "prepare-summary.json")
     reader_summary = _load_json(run_root / directories["reader"] / "reader-summary.json")
@@ -108,11 +111,13 @@ def _build(run_root: Path, directories: Mapping[str, str]) -> dict[str, object]:
     reader_latency = _sum_number(reader_outputs, "reader_latency_ms")
     judge_latency, abstention = _judge_totals(judge_outputs)
     artifacts = _artifacts(run_root, directories)
+    usage = _usage(reader_summary, score_summary, manifest)
     return {
         "schema": REPORT_SCHEMA,
         "classification": "smoke-subset",
         "status": _status(summary, score_summary, artifacts),
         "run_id": _run_id(manifest, summary),
+        "experiment_arm": _experiment_arm(manifest, retrieval_manifest),
         "generated_at": datetime.now(UTC).isoformat(),
         "question_count": _question_count(
             summary, score_summary, replay_summary, reader_summary, prepare_summary, retrieval_summary
@@ -131,16 +136,7 @@ def _build(run_root: Path, directories: Mapping[str, str]) -> dict[str, object]:
             "tokens": _number(prepare_summary, "memory_context_tokens"),
             "citations_available": _number(retrieval_summary, "citation_count"),
         },
-        "usage": {
-            "ingestion_tokens": 0,
-            "ingestion_tokens_note": "the PowerContext Memory adapter ingests without a model, so no provider reports ingestion usage",
-            "reader_input_tokens": _nested_number(reader_summary, "usage", "input_tokens"),
-            "reader_output_tokens": _nested_number(reader_summary, "usage", "output_tokens"),
-            "judge_input_tokens": _nested_number(score_summary, "judge_usage", "input_tokens"),
-            "judge_output_tokens": _nested_number(score_summary, "judge_usage", "output_tokens"),
-            "estimated_cost_usd": None,
-            "estimated_cost_note": "no provider price table revision is pinned for this smoke run",
-        },
+        "usage": usage,
         "failures": _failure_counts(run_root, directories),
         "abstention": abstention,
         "artifacts": artifacts,
@@ -170,6 +166,330 @@ def _run_id(manifest: dict[str, object] | None, summary: dict[str, object] | Non
         if isinstance(value, str) and value.strip():
             return value
     return None
+
+
+def _experiment_arm(
+    manifest: dict[str, object] | None, retrieval_manifest: dict[str, object] | None
+) -> dict[str, object] | None:
+    """Read the recorded arm identity, preferring the run manifest over a retrieval-only run."""
+
+    for source in (manifest, retrieval_manifest):
+        if source is None:
+            continue
+        value = source.get("experiment_arm")
+        if isinstance(value, dict):
+            return {str(key): item for key, item in value.items()}
+    return None
+
+
+def _usage(
+    reader_summary: dict[str, object] | None,
+    score_summary: dict[str, object] | None,
+    manifest: dict[str, object] | None,
+) -> dict[str, object]:
+    """Report tokens, per-stage usage-based cost, and the ingestion zero-cost record.
+
+    The total is reported only when every model stage that actually ran has a priced cost
+    recorded under one price policy revision. A stage counts as run when its summary
+    exists, or when the manifest modes say it was configured and no summary proves
+    otherwise — a missing or unpriced stage cost therefore keeps the total ``null``
+    instead of silently summing the stages that happen to be present.
+    """
+
+    reader_cost = _stage_cost(reader_summary, "cost")
+    judge_cost = _stage_cost(score_summary, "judge_cost")
+    ingestion = model_free_cost_block(
+        stage="ingestion",
+        reason=(
+            "the PowerContext Memory adapter ingests without a model, so no provider reports "
+            "ingestion usage and ingestion cost is zero"
+        ),
+    )
+    modes = _mapping(manifest.get("modes")) if manifest is not None else {}
+    judge_calls = _judge_call_count(score_summary)
+    reader_state = _model_stage_state(
+        summary=reader_summary,
+        cost=reader_cost,
+        configured=modes.get("reader") is True,
+        calls_expected=False,
+        role="Reader",
+        configured_provider=_configured_provider(manifest, "reader"),
+        configured_model=_configured_model(manifest, "reader"),
+        configured_policy=_configured_cost_policy(manifest, "reader"),
+    )
+    judge_state = _model_stage_state(
+        summary=score_summary,
+        cost=judge_cost,
+        configured=modes.get("score") is True,
+        calls_expected=judge_calls > 0,
+        role="Judge",
+        configured_provider=_configured_provider(manifest, "judge"),
+        configured_model=_configured_model(manifest, "judge"),
+        configured_policy=_configured_cost_policy(manifest, "judge"),
+        recorded_usage_nonzero=_mapping_nonzero(score_summary, "judge_usage"),
+        calls=judge_calls,
+    )
+    total, note = _total_cost(
+        reader_cost,
+        judge_cost,
+        reader_state=reader_state,
+        judge_state=judge_state,
+        include_judge=judge_calls > 0,
+    )
+    return {
+        "ingestion_tokens": 0,
+        "ingestion_tokens_note": (
+            "the PowerContext Memory adapter ingests without a model, so no provider reports ingestion usage"
+        ),
+        "ingestion_cost": ingestion,
+        "reader_input_tokens": _nested_number(reader_summary, "usage", "input_tokens"),
+        "reader_output_tokens": _nested_number(reader_summary, "usage", "output_tokens"),
+        "judge_input_tokens": _nested_number(score_summary, "judge_usage", "input_tokens"),
+        "judge_output_tokens": _nested_number(score_summary, "judge_usage", "output_tokens"),
+        "reader_cost": reader_cost,
+        "judge_cost": judge_cost,
+        "estimated_cost_usd": None if total is None else total["cost_usd"],
+        "estimated_cost_note": note,
+    }
+
+
+def _model_stage_state(
+    *,
+    summary: dict[str, object] | None,
+    cost: Mapping[str, object] | None,
+    configured: bool,
+    calls_expected: bool,
+    role: str,
+    configured_provider: str | None,
+    configured_model: str | None,
+    configured_policy: Mapping[str, object] | None,
+    recorded_usage_nonzero: bool = False,
+    calls: int = 0,
+) -> str | None:
+    """Return the reason this model stage blocks a total, or ``None`` when it is settled.
+
+    ``None`` also means the stage did not run and therefore owes no cost: only a stage whose
+    summary exists, or that the manifest modes configured without a contrary summary, must
+    account for its cost.
+    """
+
+    if summary is None:
+        if not configured:
+            return None
+        return f"the run was configured to run the {role} but no {role} summary recorded a cost"
+    if role == "Judge" and not calls_expected:
+        if recorded_usage_nonzero or (cost is not None and _nonnull_usage(cost)):
+            return "the Judge recorded non-zero usage despite zero recorded model calls"
+        return None
+    if cost is None:
+        # A score stage that made no model call owes no Judge cost; any other absent block is
+        # a missing artifact the report must not silently drop.
+        if role == "Judge" and not calls_expected:
+            return None
+        if calls_expected:
+            return f"the {role} made {calls} model call(s) but recorded no priced cost"
+        return f"the {role} stage ran but its summary recorded no cost block"
+    amount = _cost_amount(cost)
+    if amount is None:
+        if not calls_expected and role == "Judge" and not _nonnull_usage(cost):
+            # No Judge call happened and the recorded usage is zero, so the absent price is
+            # genuinely zero cost rather than a missing artifact.
+            return None
+        reason = cost.get("unavailable_reason")
+        detail = f": {reason}" if reason else ""
+        if calls_expected:
+            return f"the {role} made {calls} model call(s) but recorded no priced cost{detail}"
+        if _nonnull_usage(cost):
+            return f"the {role} recorded non-zero usage without a priced cost{detail}"
+        return f"the {role} stage recorded no priced cost{detail}"
+    identity_problem = _cost_identity_problem(
+        cost,
+        configured_provider=configured_provider,
+        configured_model=configured_model,
+        configured_policy=configured_policy,
+    )
+    if identity_problem is not None:
+        return f"the {role} cost {identity_problem}"
+    if configured_model is not None and str(cost.get("model")) != configured_model:
+        return f"the {role} cost was recorded for model {cost.get('model')!r}, not the configured {configured_model!r}"
+    return None
+
+
+def _nonnull_usage(cost: Mapping[str, object]) -> bool:
+    """Report whether a cost block carries any non-zero token count."""
+
+    for key in ("input_tokens", "input_cache_hit_tokens", "input_cache_miss_tokens", "output_tokens"):
+        value = cost.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
+
+
+def _judge_call_count(score_summary: dict[str, object] | None) -> int:
+    """Count real Judge model calls, falling back to recorded usage for older artifacts."""
+
+    if score_summary is None:
+        return 0
+    value = score_summary.get("judge_calls")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    usage = score_summary.get("judge_usage")
+    if isinstance(usage, Mapping) and any(
+        isinstance(token_count, int) and not isinstance(token_count, bool) and token_count > 0
+        for token_count in usage.values()
+    ):
+        return 1
+    cost = score_summary.get("judge_cost")
+    if isinstance(cost, Mapping):
+        return 1 if _cost_amount({str(name): item for name, item in cost.items()}) is not None else 0
+    return 0
+
+
+def _configured_model(manifest: dict[str, object] | None, role: str) -> str | None:
+    """Read the model the run manifest pinned for one role, when it recorded one."""
+
+    if manifest is None:
+        return None
+    block = manifest.get(role)
+    if not isinstance(block, Mapping):
+        return None
+    model = block.get("model")
+    return model.strip() if isinstance(model, str) and model.strip() else None
+
+
+def _configured_provider(manifest: dict[str, object] | None, role: str) -> str | None:
+    if manifest is None:
+        return None
+    block = manifest.get(role)
+    if not isinstance(block, Mapping):
+        return None
+    provider = block.get("provider")
+    return provider.strip() if isinstance(provider, str) and provider.strip() else None
+
+
+def _configured_cost_policy(manifest: dict[str, object] | None, role: str) -> Mapping[str, object] | None:
+    if manifest is None:
+        return None
+    policies = manifest.get("cost_policy")
+    if not isinstance(policies, Mapping):
+        return None
+    policy = policies.get(role.lower())
+    if not isinstance(policy, Mapping):
+        return None
+    return {str(key): value for key, value in policy.items()}
+
+
+def _mapping_nonzero(summary: dict[str, object] | None, key: str) -> bool:
+    if summary is None:
+        return False
+    usage = summary.get(key)
+    if not isinstance(usage, Mapping):
+        return False
+    return any(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in usage.values())
+
+
+def _cost_identity_problem(
+    cost: Mapping[str, object],
+    *,
+    configured_provider: str | None,
+    configured_model: str | None,
+    configured_policy: Mapping[str, object] | None,
+) -> str | None:
+    if cost.get("currency") != "USD":
+        return "was not recorded in USD"
+    if configured_provider is not None and cost.get("provider") != configured_provider:
+        return f"was recorded for provider {cost.get('provider')!r}, not the configured {configured_provider!r}"
+    if configured_model is not None and cost.get("model") != configured_model:
+        return f"was recorded for model {cost.get('model')!r}, not the configured {configured_model!r}"
+    if configured_policy is None:
+        return "was priced but the run manifest has no configured price policy"
+    for key in (
+        "provider",
+        "model",
+        "currency",
+        "input_cache_hit_price_per_million",
+        "input_cache_miss_price_per_million",
+        "output_price_per_million",
+        "price_policy_revision",
+    ):
+        if cost.get(key) != configured_policy.get(key):
+            return f"does not match the run's configured price policy field {key}"
+    input_tokens = cost.get("input_tokens")
+    hit = cost.get("input_cache_hit_tokens")
+    miss = cost.get("input_cache_miss_tokens")
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in (input_tokens, hit, miss)
+    ):
+        return "has invalid cache token counts"
+    normalized_input = cast(int, input_tokens)
+    normalized_hit = cast(int, hit)
+    normalized_miss = cast(int, miss)
+    if normalized_input != normalized_hit + normalized_miss:
+        return "has cache token counts that do not equal its input token total"
+    return None
+
+
+def _stage_cost(summary: dict[str, object] | None, key: str) -> dict[str, object] | None:
+    """Read one stage's cost block, preserving an unconfigured cost as null with its reason."""
+
+    if summary is None:
+        return None
+    value = summary.get(key)
+    if not isinstance(value, Mapping):
+        return None
+    record = {str(name): item for name, item in value.items()}
+    cost = record.get("cost_usd")
+    if cost is not None and not _finite_nonnegative_number(cost):
+        return None
+    return record
+
+
+def _total_cost(
+    reader_cost: Mapping[str, object] | None,
+    judge_cost: Mapping[str, object] | None,
+    *,
+    reader_state: str | None,
+    judge_state: str | None,
+    include_judge: bool,
+) -> tuple[dict[str, object] | None, str]:
+    """Sum stage costs only when every model stage that ran was priced under one policy."""
+
+    problems = [state for state in (reader_state, judge_state) if state]
+    if problems:
+        return None, "; ".join(problems)
+    costs = [
+        cost
+        for cost in (reader_cost, judge_cost if include_judge else None)
+        if cost is not None and _cost_amount(cost) is not None
+    ]
+    if not costs:
+        return None, "no Reader or Judge model stage ran in this smoke run, so no model cost is reported"
+    currencies = {str(cost.get("currency")) for cost in costs}
+    if len(currencies) != 1:
+        return None, "the recorded stage costs use different currencies, so no single total is reported"
+    revisions = {str(cost.get("price_policy_revision")) for cost in costs}
+    if len(revisions) != 1:
+        return None, "the recorded stage costs were priced under different price policy revisions"
+    amounts = [_cost_amount(cost) for cost in costs]
+    return (
+        {"cost_usd": round(sum(amount for amount in amounts if amount is not None), 6), "currency": currencies.pop()},
+        "sum of the Reader and Judge usage costs recorded under the run's explicit price policy",
+    )
+
+
+def _cost_amount(cost: Mapping[str, object]) -> float | None:
+    """Read one recorded cost amount, keeping a null cost distinguishable from zero."""
+
+    value = cost.get("cost_usd")
+    if not _finite_nonnegative_number(value):
+        return None
+    return float(value)
+
+
+def _finite_nonnegative_number(value: object) -> TypeGuard[int | float]:
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and value >= 0
+    )
 
 
 def _question_count(*summaries: dict[str, object] | None) -> int | None:
@@ -217,10 +537,14 @@ def _failure_counts(run_root: Path, directories: Mapping[str, str]) -> dict[str,
 
 
 def _phase_failure_class(phase: str, row: Mapping[str, object], fallback: str) -> str:
-    if phase == "retrieval":
-        category = row.get("category")
-        return "retrieval" if category == "integration" else "infrastructure"
-    return fallback
+    if phase != "retrieval":
+        return fallback
+    category = row.get("category")
+    if category == "integration":
+        return "retrieval"
+    if category == "integrity":
+        return "integrity"
+    return "infrastructure"
 
 
 def _judge_totals(path: Path) -> tuple[float | None, dict[str, object]]:
@@ -381,6 +705,7 @@ def _markdown(report: Mapping[str, object]) -> str:
         "",
         f"Status: {report['status']}",
         f"Run: {_display(report['run_id'])}",
+        f"Arm: {_arm_id(report['experiment_arm'])}",
         f"Questions: {_display(report['question_count'])}",
         f"Accuracy: {_display_accuracy(accuracy)}",
         "",
@@ -390,6 +715,7 @@ def _markdown(report: Mapping[str, object]) -> str:
         + _pairs(
             {name: value for name, value in usage.items() if name.endswith("tokens") or name == "estimated_cost_usd"}
         ),
+        "Cost: " + _pairs(_cost_line(usage)),
         "Failures: " + _pairs(failures),
         "Abstention: " + _pairs(abstention),
         "",
@@ -423,6 +749,38 @@ def _mapping(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         return {}
     return {str(key): item for key, item in value.items()}
+
+
+def _arm_id(value: object) -> str:
+    if isinstance(value, Mapping):
+        identifier = value.get("id")
+        if isinstance(identifier, str) and identifier.strip():
+            return identifier
+    return "unavailable"
+
+
+def _cost_line(usage: Mapping[str, object]) -> dict[str, object]:
+    """Render one readable cost line without leaking whole nested stage records."""
+
+    reader = usage.get("reader_cost")
+    judge = usage.get("judge_cost")
+    return {
+        "ingestion": _stage_cost_display(usage.get("ingestion_cost")),
+        "reader": _stage_cost_display(reader),
+        "judge": _stage_cost_display(judge),
+        "total_usd": usage.get("estimated_cost_usd"),
+    }
+
+
+def _stage_cost_display(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return None
+    cost = value.get("cost_usd")
+    if cost is None:
+        reason = value.get("unavailable_reason")
+        return f"unavailable ({reason})" if reason else "unavailable"
+    currency = value.get("currency")
+    return str(cost) if currency is None else f"{cost} {currency}"
 
 
 def _pairs(values: Mapping[str, object]) -> str:

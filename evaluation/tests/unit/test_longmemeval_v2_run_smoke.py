@@ -19,15 +19,34 @@ from typing import Any
 
 import pytest
 
+from powercontext_eval.benchmarks.longmemeval_v2.adapter import (
+    PowerContextMemoryAdapterError,
+    PowerContextMemoryModeError,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.arms import CURRENT_MEMORY_HYBRID, ExperimentArmError
+from powercontext_eval.benchmarks.longmemeval_v2.costs import parse_cost_policy
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun, PrepareSmokeError
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeError, ReaderSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.replay_score import ReplayScoreRun
-from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeError, RetrievalSmokeRun
-from powercontext_eval.benchmarks.longmemeval_v2.run_smoke import RunSmokeError, SmokeStages, run_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import (
+    RetrievalCapabilityError,
+    RetrievalSmokeError,
+    RetrievalSmokeRun,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.run_smoke import RunSmokeError, SmokeStages, classify_error, run_smoke
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.smoke import PreparedSmokeRun
 
 SECRET = "sk-smoke-test-secret-value"
+READER_PRICE_POLICY = {
+    "provider": "deepseek-openai",
+    "model": "deepseek-flash",
+    "currency": "USD",
+    "input_cache_hit_price_per_million": 0.006,
+    "input_cache_miss_price_per_million": 0.3,
+    "output_price_per_million": 1.2,
+    "price_policy_revision": "deepseek-public-list-2026-09",
+}
 
 
 class StubTransport:
@@ -42,11 +61,20 @@ class _Harness:
 
     def __init__(self, *, fail_on: str | None = None, correct: int = 4) -> None:
         self.calls: list[str] = []
+        self.retrieval_arguments: dict[str, Any] | None = None
+        self.reader_arguments: dict[str, Any] | None = None
+        self.score_arguments: dict[str, Any] | None = None
         self._fail_on = fail_on
         self._correct = correct
 
     def _record(self, name: str, arguments: dict[str, Any]) -> Path:
         self.calls.append(name)
+        if name == "retrieval":
+            self.retrieval_arguments = dict(arguments)
+        if name == "reader":
+            self.reader_arguments = dict(arguments)
+        if name == "score":
+            self.score_arguments = dict(arguments)
         if self._fail_on == name:
             raise _stage_error(name)
         output = Path(arguments["output_dir"])
@@ -269,6 +297,17 @@ def test_run_smoke_records_the_manifest_before_any_stage_runs(tmp_path: Path) ->
     assert manifest["classification"] == "smoke-subset"
     assert manifest["run_id"] == "run"
     assert manifest["modes"] == {"reader": True, "score": True}
+    assert manifest["experiment_arm"] == {
+        "id": "current-memory-fts-v1",
+        "retrieval_strategy": "memory-search",
+        "search_mode": "fts",
+        "memory_projection": "deterministic-compact-v1",
+        "query_projection": "question-text-v1",
+        "prepared_context_max_bytes": None,
+        "temporal_filter": None,
+        "task_lens": None,
+    }
+    assert manifest["powercontext"]["search_mode"] == "fts"
     assert manifest["reader"]["model"] == "deepseek-flash"
     assert manifest["reader"]["token_env"] == "DEEPSEEK_API_KEY"
     assert manifest["judge"]["token_env"] == "DEEPSEEK_API_KEY"
@@ -278,6 +317,8 @@ def test_run_smoke_records_the_manifest_before_any_stage_runs(tmp_path: Path) ->
     assert manifest["privacy"]["reference_answers"] == "never-read-by-the-adapter-retrieval-prepare-or-reader-stages"
     assert "score stage reads the locked local questions" in manifest["privacy"]["reference_answers_readers"]
     assert manifest["privacy"]["reference_answers_artifact"] == "05-score/scoring-inputs.local.jsonl"
+    assert harness.retrieval_arguments is not None
+    assert harness.retrieval_arguments["experiment_arm"].arm_id == "current-memory-fts-v1"
 
 
 def test_run_smoke_refuses_an_existing_output_directory_before_any_stage(tmp_path: Path) -> None:
@@ -402,25 +443,27 @@ def test_run_smoke_redacts_the_powercontext_token_in_model_free_mode(
 
 
 def test_run_smoke_does_not_publish_completed_while_retrieval_is_still_pending(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A skip-reader run must stay partial after preflight, not claim completion early."""
 
     harness = _Harness()
     observed: list[str] = []
-    harness.retrieval = _observing_stage(harness.retrieval, observed, tmp_path / "run")
+    monkeypatch.setattr(harness, "retrieval", _observing_stage(harness.retrieval, observed, tmp_path / "run"))
     result = _run(tmp_path, harness, skip_reader=True)
 
     assert observed == ["partial"]
     assert result.status == "partial"
 
 
-def test_run_smoke_does_not_publish_completed_while_model_phases_are_pending(tmp_path: Path) -> None:
+def test_run_smoke_does_not_publish_completed_while_model_phases_are_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A full run stays partial until every phase, including replay, has completed."""
 
     harness = _Harness()
     observed: list[str] = []
-    harness.reader = _observing_stage(harness.reader, observed, tmp_path / "run")
+    monkeypatch.setattr(harness, "reader", _observing_stage(harness.reader, observed, tmp_path / "run"))
     result = _run(tmp_path, harness)
 
     assert observed == ["partial"]
@@ -450,3 +493,66 @@ def _observing_stage(stage: Callable[..., Any], observed: list[str], run_dir: Pa
         return stage(**arguments)
 
     return wrapper
+
+
+def test_run_smoke_forwards_the_selected_experiment_arm_to_retrieval(tmp_path: Path) -> None:
+    harness = _Harness()
+    result = _run(tmp_path, harness, skip_reader=True, experiment_arm="current-memory-hybrid-v1")
+
+    assert result.status == "partial"
+    assert harness.retrieval_arguments is not None
+    assert harness.retrieval_arguments["experiment_arm"] is CURRENT_MEMORY_HYBRID
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["experiment_arm"]["id"] == "current-memory-hybrid-v1"
+    assert manifest["powercontext"]["search_mode"] == "hybrid"
+    report = json.loads((tmp_path / "run" / "report.json").read_text(encoding="utf-8"))
+    assert report["experiment_arm"]["id"] == "current-memory-hybrid-v1"
+
+
+def test_run_smoke_rejects_an_unregistered_experiment_arm(tmp_path: Path) -> None:
+    harness = _Harness()
+
+    with pytest.raises(ExperimentArmError, match="unknown experiment arm"):
+        _run(tmp_path, harness, experiment_arm="l0-persistent-v1")
+
+    assert harness.calls == []
+    assert not (tmp_path / "run").exists()
+
+
+def test_run_smoke_classifies_mode_and_capability_errors(tmp_path: Path) -> None:
+    assert classify_error(PowerContextMemoryModeError("hybrid was not executed")) == "integrity"
+    assert classify_error(RetrievalCapabilityError("Server does not support hybrid")) == "infrastructure"
+    assert classify_error(RetrievalSmokeError("retrieval failed")) == "retrieval"
+    assert classify_error(PowerContextMemoryAdapterError("transport failed")) == "infrastructure"
+
+
+def test_run_smoke_records_and_forwards_separate_reader_and_judge_price_policies(tmp_path: Path) -> None:
+    """Reader and Judge may run different models, so each stage carries its own policy."""
+
+    harness = _Harness()
+    reader_policy = parse_cost_policy(READER_PRICE_POLICY)
+    judge_policy = parse_cost_policy({**READER_PRICE_POLICY, "model": "deepseek-v4-pro"})
+    assert reader_policy is not None and judge_policy is not None
+    result = _run(tmp_path, harness, reader_price_policy=reader_policy, judge_price_policy=judge_policy)
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["cost_policy"] == {
+        "reader": READER_PRICE_POLICY,
+        "judge": {**READER_PRICE_POLICY, "model": "deepseek-v4-pro"},
+    }
+    assert harness.reader_arguments is not None
+    assert harness.reader_arguments["price_policy"] is reader_policy
+    assert harness.score_arguments is not None
+    assert harness.score_arguments["judge_price_policy"] is judge_policy
+
+
+def test_run_smoke_keeps_both_cost_policies_null_when_no_prices_are_configured(tmp_path: Path) -> None:
+    harness = _Harness()
+    result = _run(tmp_path, harness)
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["cost_policy"] == {"reader": None, "judge": None}
+    assert harness.reader_arguments is not None
+    assert harness.reader_arguments["price_policy"] is None
+    assert harness.score_arguments is not None
+    assert harness.score_arguments["judge_price_policy"] is None

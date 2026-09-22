@@ -24,11 +24,16 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+from powercontext_eval.benchmarks.longmemeval_v2.costs import (
+    ModelPricePolicy,
+    cost_policy_record,
+    usage_cost_block,
+)
 from powercontext_eval.errors import PowerContextEvalError
 
 DEFAULT_ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL"
@@ -215,6 +220,7 @@ def run_reader_smoke(
     temperature: float = 0.0,
     timeout_seconds: float = 120.0,
     max_questions: int | None = None,
+    price_policy: ModelPricePolicy | None = None,
     transport: ReaderTransport | None = None,
 ) -> ReaderSmokeRun:
     """Call a Reader sequentially and write answer/usage artifacts without persisting credentials."""
@@ -302,6 +308,7 @@ def run_reader_smoke(
             },
             "judge": None,
             "telemetry": "disabled-by-reader-runner",
+            "cost_policy": cost_policy_record(price_policy),
         },
     )
 
@@ -310,6 +317,9 @@ def run_reader_smoke(
     failed = 0
     input_tokens = 0
     output_tokens = 0
+    cache_hit_tokens = 0
+    cache_miss_tokens = 0
+    cache_split_reported = True
     _create_empty(outputs_path)
     _create_empty(failures_path)
     for prompt in _jsonl(prompts_path):
@@ -337,6 +347,15 @@ def run_reader_smoke(
         if isinstance(usage, Mapping):
             input_tokens += _nonnegative_int(usage.get("input_tokens"))
             output_tokens += _nonnegative_int(usage.get("output_tokens"))
+            hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
+            miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
+            # One response without the split makes the summed split incomplete, so the
+            # summary keeps it null rather than pricing an understated cached portion.
+            if hit is None or miss is None:
+                cache_split_reported = False
+            else:
+                cache_hit_tokens += hit
+                cache_miss_tokens += miss
     _write_json_exclusive(
         summary_path,
         {
@@ -346,8 +365,22 @@ def run_reader_smoke(
             "question_count": succeeded + failed,
             "succeeded": succeeded,
             "failed": failed,
-            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
-            "estimated_cost": None,
+            "usage": _reader_usage_totals(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_hit_tokens=cache_hit_tokens,
+                cache_miss_tokens=cache_miss_tokens,
+                cache_split_reported=cache_split_reported,
+            ),
+            "cost": usage_cost_block(
+                price_policy,
+                provider=provider,
+                model=normalized_model,
+                input_tokens=input_tokens,
+                cache_hit_tokens=cache_hit_tokens if cache_split_reported else None,
+                cache_miss_tokens=cache_miss_tokens if cache_split_reported else None,
+                output_tokens=output_tokens,
+            ),
             "judge": None,
             "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
         },
@@ -404,14 +437,43 @@ def _run_one(transport: ReaderTransport, prompt: Mapping[str, object]) -> dict[s
         "prompt_sha256": prompt.get("prompt_sha256"),
         "response_text": answer,
         "response_sha256": hashlib.sha256(answer.encode()).hexdigest(),
-        "usage": {
-            "input_tokens": _nonnegative_int(usage.get("input_tokens")),
-            "output_tokens": _nonnegative_int(usage.get("output_tokens")),
-        },
+        "usage": _reader_usage(usage),
         "model": response.get("model"),
         "stop_reason": response.get("stop_reason"),
         "reader_latency_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
     }
+
+
+def _reader_usage(usage: Mapping[Any, Any]) -> dict[str, object]:
+    """Keep a transport's cache hit/miss split so the recorded cost can price it."""
+
+    record: dict[str, object] = {
+        "input_tokens": _nonnegative_int(usage.get("input_tokens")),
+        "output_tokens": _nonnegative_int(usage.get("output_tokens")),
+    }
+    hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
+    miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
+    if hit is not None and miss is not None:
+        record["input_cache_hit_tokens"] = hit
+        record["input_cache_miss_tokens"] = miss
+    return record
+
+
+def _reader_usage_totals(
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_hit_tokens: int,
+    cache_miss_tokens: int,
+    cache_split_reported: bool,
+) -> dict[str, object]:
+    """Report summed usage, keeping the cache split only when every response reported it."""
+
+    totals: dict[str, object] = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    if cache_split_reported:
+        totals["input_cache_hit_tokens"] = cache_hit_tokens
+        totals["input_cache_miss_tokens"] = cache_miss_tokens
+    return totals
 
 
 def _response_text(response: Mapping[str, object]) -> str:
@@ -445,10 +507,27 @@ def _normalize_deepseek_response(value: object) -> Mapping[str, object]:
         "model": value.get("model"),
         "stop_reason": choice.get("finish_reason"),
         "content": [{"type": "text", "text": text}],
-        "usage": {
-            "input_tokens": _nonnegative_int(usage.get("prompt_tokens")),
-            "output_tokens": _nonnegative_int(usage.get("completion_tokens")),
-        },
+        "usage": _deepseek_usage(usage),
+    }
+
+
+def _deepseek_usage(usage: Mapping[Any, Any]) -> dict[str, object]:
+    """Keep DeepSeek's native cache split instead of collapsing it into one input total.
+
+    ``prompt_cache_hit_tokens`` and ``prompt_cache_miss_tokens`` are billed at different
+    rates, so both are preserved; the total input is their sum, matching the API contract.
+    """
+
+    hit = _optional_nonnegative_int(usage.get("prompt_cache_hit_tokens"))
+    miss = _optional_nonnegative_int(usage.get("prompt_cache_miss_tokens"))
+    total = _nonnegative_int(usage.get("prompt_tokens"))
+    if hit is None or miss is None:
+        return {"input_tokens": total, "output_tokens": _nonnegative_int(usage.get("completion_tokens"))}
+    return {
+        "input_tokens": total,
+        "input_cache_hit_tokens": hit,
+        "input_cache_miss_tokens": miss,
+        "output_tokens": _nonnegative_int(usage.get("completion_tokens")),
     }
 
 
@@ -525,3 +604,11 @@ def _nonblank(value: object, label: str) -> str:
 
 def _nonnegative_int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _optional_nonnegative_int(value: object) -> int | None:
+    """Keep an absent cache field distinguishable from a reported zero."""
+
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None

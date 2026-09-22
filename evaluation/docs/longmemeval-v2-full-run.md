@@ -85,12 +85,19 @@ uv run --project evaluation powercontext-eval longmemeval-v2 run-smoke \
   --powercontext-revision <POWERCONTEXT_GIT_SHA> \
   --integration-revision <INTEGRATION_GIT_SHA> \
   --powercontext-base-url http://127.0.0.1:18765 \
+  --experiment-arm current-memory-fts-v1 \
   --reader-provider deepseek-openai \
   --reader-model deepseek-flash \
   --judge-provider deepseek-openai \
   --judge-model deepseek-flash \
   --output-dir D:\powercontext-eval\runs\longmemeval-v2\full-v1-<YYYYMMDDTHHMMSS>
 ```
+
+The retrieval behaviour is selected only through `--experiment-arm` (currently
+`current-memory-fts-v1`, `current-memory-hybrid-v1`, `query-time-compact-v1`, or
+`write-time-l0-l1-v1`, or `task-lensed-selection-v1`; see
+[../README.md](../README.md#experiment-arms)). Two full runs may be compared only when
+`ensure_comparable_experiment_runs` confirms that every pinned condition except the arm matches.
 
 Credentials come only from the environment (`POWERCONTEXT_TOKEN`, `DEEPSEEK_API_KEY`). Without
 them the run fails as a `configuration` failure before any model work, with a non-zero exit code.
@@ -110,13 +117,36 @@ A full run spends real money on the Reader and Judge. Before any paid phase:
 3. **Get explicit approval.** The operator must confirm the estimated cost and the data egress
    scope (questions, context, and Reader answers are sent to the configured provider) before the
    full Reader/Judge run starts.
-4. **Enforce hard limits.** `--max-cases` and `--max-estimated-cost-usd` (or equivalent guards)
-   are **not implemented yet**. Implementing and reviewing them is a prerequisite for any full
-   run: they must stop the run before the Reader/Judge phase when the case count or the
-   token-based cost estimate exceeds the approved budget.
+4. **Record cost under an explicit price policy.** Pass `--price-policy` (Reader) and
+   `--judge-price-policy` (Judge) with the operator's current provider prices to have the run price
+   its real Reader and Judge usage:
 
-`report.json` keeps `estimated_cost_usd` at `null` unless a provider price table revision is
-pinned in the run manifest; the smoke and full runners never invent a cost value.
+   ```powershell
+   --price-policy '{\"provider\":\"deepseek-openai\",\"model\":\"<READER_MODEL>\",\"currency\":\"USD\",\"input_cache_hit_price_per_million\":<HIT_PRICE>,\"input_cache_miss_price_per_million\":<MISS_PRICE>,\"output_price_per_million\":<OUTPUT_PRICE>,\"price_policy_revision\":\"<PRICE_REVISION>\"}'
+   --judge-price-policy '{\"provider\":\"deepseek-openai\",\"model\":\"<JUDGE_MODEL>\",\"currency\":\"USD\",\"input_cache_hit_price_per_million\":<HIT_PRICE>,\"input_cache_miss_price_per_million\":<MISS_PRICE>,\"output_price_per_million\":<OUTPUT_PRICE>,\"price_policy_revision\":\"<PRICE_REVISION>\"}'
+   ```
+
+   Prices are never hardcoded, so the operator supplies and versions them. Each policy must name
+   both the `provider` and the `model` it prices, and `currency` must be `USD` because the recorded
+   amount fields are named `*_usd`. DeepSeek bills cached input far below uncached input, so the
+   policy carries separate cache-hit and cache-miss input prices and the run keeps DeepSeek's
+   `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` split; usage that reports no split stays
+   `null` rather than being blended. Each stage summary and manifest records the policy identity,
+   and `report.json` reports `usage.reader_cost`, `usage.judge_cost`, and the summed
+   `usage.estimated_cost_usd` only when every model stage that ran was priced under one policy
+   revision.
+5. **Enforce hard limits.** `--max-cases` and `--max-estimated-cost-usd` are **not implemented**
+   in this scope, and no generic budget-approval system is provided. Any full run must therefore
+   be gated by the operator outside the runner: review the step-1 token counts, the step-4 price
+   policies, and the approval in step 3 before starting the paid Reader/Judge phases.
+
+`report.json` keeps `estimated_cost_usd` at `null` unless every model stage that actually ran
+recorded a usage cost under an explicit price policy. The report decides which stages ran from the
+run manifest `modes` and the stage summaries, so a missing, unpriced, provider/model-mismatched,
+currency-mismatched, or differently-revisioned stage cost keeps the total `null` with a reason
+rather than summing only the stages that are present. Without a policy each stage records
+`cost_usd: null` with an `unavailable_reason`, and ingestion — which calls no model — records zero
+tokens, `cost_usd: 0.0`, and that reason.
 
 ## Output isolation
 

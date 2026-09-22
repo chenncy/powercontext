@@ -12,16 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from powercontext_eval.benchmarks.longmemeval_v2.costs import ModelPricePolicy
 from powercontext_eval.benchmarks.longmemeval_v2.prepare_smoke import PreparedPromptRun
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import ReaderSmokeRun
 from powercontext_eval.benchmarks.longmemeval_v2.replay_score import ReplayScoreRun
 from powercontext_eval.benchmarks.longmemeval_v2.report import ReportError, ReportRun
-from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import RetrievalSmokeRun
+from powercontext_eval.benchmarks.longmemeval_v2.retrieval_smoke import (
+    RetrievalCapabilityError,
+    RetrievalSmokeRun,
+)
 from powercontext_eval.benchmarks.longmemeval_v2.run_smoke import RunSmokeError, SmokeRunResult
 from powercontext_eval.benchmarks.longmemeval_v2.score_smoke import ScoreSmokeRun
 from powercontext_eval.cli import app
@@ -83,7 +88,7 @@ def test_longmemeval_v2_retrieval_smoke_runs_without_reader_or_judge(
             "integration_revision": "adapter-sha",
             "base_url": "http://127.0.0.1:8000",
             "token_env": "POWERCONTEXT_TOKEN",
-            "search_mode": "fts",
+            "experiment_arm": "current-memory-fts-v1",
             "search_limit": 10,
             "timeout_seconds": 30.0,
         }
@@ -184,6 +189,7 @@ def test_longmemeval_v2_reader_smoke_uses_environment_reference_without_secret(
             "temperature": 0.0,
             "timeout_seconds": 120.0,
             "max_questions": None,
+            "price_policy": None,
         }
     ]
 
@@ -240,6 +246,7 @@ def test_longmemeval_v2_score_smoke_uses_local_reader_artifacts_and_judge_enviro
             "judge_max_tokens": 256,
             "judge_temperature": 0.0,
             "judge_timeout_seconds": 120.0,
+            "judge_price_policy": None,
         }
     ]
 
@@ -342,7 +349,7 @@ def test_longmemeval_v2_run_smoke_forwards_every_stage_option(monkeypatch: pytes
             "memory_context_max_tokens": 200_000,
             "powercontext_base_url": "http://127.0.0.1:8000",
             "powercontext_token_env": "POWERCONTEXT_TOKEN",
-            "search_mode": "fts",
+            "experiment_arm": "current-memory-fts-v1",
             "search_limit": 10,
             "timeout_seconds": 30.0,
             "reader_provider": "deepseek-openai",
@@ -360,6 +367,8 @@ def test_longmemeval_v2_run_smoke_forwards_every_stage_option(monkeypatch: pytes
             "judge_max_tokens": 256,
             "judge_temperature": 0.0,
             "judge_timeout_seconds": 120.0,
+            "reader_price_policy": None,
+            "judge_price_policy": None,
             "skip_reader": False,
             "skip_score": False,
         }
@@ -452,6 +461,166 @@ def test_longmemeval_v2_run_smoke_reports_a_refused_output_directory(
     assert "Refusing to overwrite smoke run artifacts" in result.output
 
 
+def test_longmemeval_v2_run_smoke_forwards_a_selected_experiment_arm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> SmokeRunResult:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return SmokeRunResult(
+            output_dir=output,
+            manifest_path=output / "run-manifest.json",
+            summary_path=output / "run-summary.json",
+            failures_path=output / "failures.jsonl",
+            status="partial",
+            completed_phases=("preflight", "retrieval", "prepare"),
+            skipped_phases=("reader", "score", "replay"),
+            failed_phase=None,
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--skip-reader",
+            "--experiment-arm",
+            "current-memory-hybrid-v1",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output  # a partial model-free run exits non-zero by design
+    assert calls[0]["experiment_arm"] == "current-memory-hybrid-v1"
+
+
+def test_longmemeval_v2_run_smoke_rejects_an_unknown_experiment_arm() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--experiment-arm",
+            "l0-persistent-v1",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "unknown experiment arm" in result.output
+    assert "current-memory-fts-v1" in result.output
+    assert "current-memory-hybrid-v1" in result.output
+
+
+def test_longmemeval_v2_retrieval_smoke_rejects_an_unknown_experiment_arm() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "retrieval-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--harness-root",
+            "/harness",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--output-dir",
+            "/output",
+            "--run-id",
+            "retrieval-1",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "adapter-sha",
+            "--experiment-arm",
+            "temporal-recency-v1",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output  # an unknown arm is a parameter error
+    assert "unknown experiment arm" in result.output
+
+
+def test_longmemeval_v2_retrieval_smoke_reports_a_capability_failure_as_a_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(**kwargs: object) -> RetrievalSmokeRun:
+        raise RetrievalCapabilityError(
+            "PowerContext Server does not support hybrid Memory search "
+            "required by experiment arm current-memory-hybrid-v1"
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_retrieval_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "retrieval-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--harness-root",
+            "/harness",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--output-dir",
+            "/output",
+            "--run-id",
+            "retrieval-1",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "adapter-sha",
+            "--experiment-arm",
+            "current-memory-hybrid-v1",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output  # the environment, not the argument, is wrong
+    assert "does not support hybrid Memory search" in result.output
+    assert "Invalid value" not in result.output
+
+
 def test_longmemeval_v2_report_reads_only_saved_run_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 
@@ -476,3 +645,272 @@ def test_longmemeval_v2_report_exits_nonzero_for_a_refused_target(monkeypatch: p
 
     assert result.exit_code == 1
     assert "Refusing to overwrite report artifacts" in result.output
+
+
+PRICE_POLICY_JSON = json.dumps(
+    {
+        "provider": "deepseek-openai",
+        "model": "deepseek-flash",
+        "currency": "USD",
+        "input_cache_hit_price_per_million": 0.006,
+        "input_cache_miss_price_per_million": 0.3,
+        "output_price_per_million": 1.2,
+        "price_policy_revision": "deepseek-public-list-2026-09",
+    }
+)
+
+
+def test_longmemeval_v2_reader_smoke_forwards_an_explicit_price_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> ReaderSmokeRun:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return ReaderSmokeRun(
+            output_dir=output,
+            manifest_path=output / "reader-manifest.json",
+            outputs_path=output / "reader-outputs.jsonl",
+            failures_path=output / "reader-failures.jsonl",
+            summary_path=output / "reader-summary.json",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_reader_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "reader-smoke",
+            "--prepared-dir",
+            "/prepared",
+            "--output-dir",
+            "/output",
+            "--price-policy",
+            PRICE_POLICY_JSON,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    [call] = calls
+    assert call["price_policy"] == ModelPricePolicy(
+        provider="deepseek-openai",
+        model="deepseek-flash",
+        currency="USD",
+        input_cache_hit_price_per_million=0.006,
+        input_cache_miss_price_per_million=0.3,
+        output_price_per_million=1.2,
+        price_policy_revision="deepseek-public-list-2026-09",
+    )
+
+
+def test_longmemeval_v2_score_smoke_forwards_an_explicit_judge_price_policy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> ScoreSmokeRun:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return ScoreSmokeRun(
+            output_dir=output,
+            manifest_path=output / "score-manifest.json",
+            inputs_path=output / "scoring-inputs.local.jsonl",
+            results_path=output / "per-question.jsonl",
+            judge_outputs_path=output / "judge-outputs.jsonl",
+            failures_path=output / "score-failures.jsonl",
+            summary_path=output / "score-summary.json",
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_score_smoke", run)
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "score-smoke",
+            "--reader-dir",
+            "/reader",
+            "--data-root",
+            "/data",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--output-dir",
+            "/output",
+            "--judge-price-policy",
+            PRICE_POLICY_JSON,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    [call] = calls
+    assert call["judge_price_policy"] == ModelPricePolicy(
+        provider="deepseek-openai",
+        model="deepseek-flash",
+        currency="USD",
+        input_cache_hit_price_per_million=0.006,
+        input_cache_miss_price_per_million=0.3,
+        output_price_per_million=1.2,
+        price_policy_revision="deepseek-public-list-2026-09",
+    )
+
+
+def test_longmemeval_v2_run_smoke_forwards_separate_reader_and_judge_price_policies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run(**kwargs: object) -> SmokeRunResult:
+        calls.append(kwargs)
+        output = tmp_path / "output"
+        return SmokeRunResult(
+            output_dir=output,
+            manifest_path=output / "run-manifest.json",
+            summary_path=output / "run-summary.json",
+            failures_path=output / "failures.jsonl",
+            status="completed",
+            completed_phases=("preflight", "retrieval", "prepare", "reader", "score", "replay"),
+            skipped_phases=(),
+            failed_phase=None,
+        )
+
+    monkeypatch.setattr("powercontext_eval.cli.run_smoke", run)
+    judge_policy_json = json.dumps({**json.loads(PRICE_POLICY_JSON), "model": "deepseek-v4-pro"})
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--price-policy",
+            PRICE_POLICY_JSON,
+            "--judge-price-policy",
+            judge_policy_json,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    [call] = calls
+    reader_policy = call["reader_price_policy"]
+    judge_policy = call["judge_price_policy"]
+    assert isinstance(reader_policy, ModelPricePolicy)
+    assert isinstance(judge_policy, ModelPricePolicy)
+    assert reader_policy.model == "deepseek-flash"
+    assert judge_policy.model == "deepseek-v4-pro"
+
+
+def test_longmemeval_v2_run_smoke_rejects_a_malformed_price_policy() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--price-policy",
+            '{"provider": "deepseek-openai"}',
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must contain exactly" in result.output
+
+
+def test_longmemeval_v2_run_smoke_rejects_a_non_usd_price_policy() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--price-policy",
+            json.dumps({**json.loads(PRICE_POLICY_JSON), "currency": "CNY"}),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "currency must be USD" in result.output
+
+
+def test_longmemeval_v2_run_smoke_rejects_a_non_json_price_policy() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "longmemeval-v2",
+            "run-smoke",
+            "--data-root",
+            "/data",
+            "--dataset-lock",
+            "/dataset-lock.json",
+            "--smoke-manifest",
+            "/smoke.json",
+            "--harness-root",
+            "/harness",
+            "--harness-python",
+            "/harness/python",
+            "--processor-revision",
+            "processor-sha",
+            "--output-dir",
+            "/output",
+            "--powercontext-revision",
+            "pc-sha",
+            "--integration-revision",
+            "integration-sha",
+            "--judge-price-policy",
+            "0.3 USD per million",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--judge-price-policy must be a JSON object" in result.output

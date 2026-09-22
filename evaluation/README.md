@@ -296,6 +296,39 @@ other's Memory. It writes `retrieval-manifest.json`,
 Reader, and Judge fields remain null because retrieval-only output is not a
 benchmark score.
 
+### Experiment arms
+
+Retrieval behaviour is selected through a registered experiment arm, not a free-form search mode:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 retrieval-smoke \
+  ... \
+  --experiment-arm current-memory-hybrid-v1
+```
+
+An arm is a frozen configuration identity: same questions and the same downstream token
+budget, with only the declared retrieval/projection knobs allowed to differ. Five arms are
+currently registered:
+
+| Arm ID | Strategy | Notes |
+| --- | --- | --- |
+| `current-memory-fts-v1` | Memory search (`fts`) | Default; identical to the previous `--search-mode fts` behaviour. |
+| `current-memory-hybrid-v1` | Memory search (`hybrid`) | Requires a Server whose `/v1/capabilities` advertises `hybrid`. |
+| `query-time-compact-v1` | PreparedContext (8,000 bytes) | Uses public `/v1/context/prepare`; does not alter ingestion or persist a new index schema. |
+| `write-time-l0-l1-v1` | Memory search (`fts`) | Writes deterministic bounded L0 index and L1 summary entries through public `remember`; no schema fields are added. |
+| `task-lensed-selection-v1` | Memory search (`fts`) | Projects the question into a deterministic keyword lens; never reads question type, gold answer, or Judge data. |
+
+Unregistered arm IDs (currently the unsupported temporal-filter arm) are rejected
+before any work runs instead of silently falling back to FTS. Before ingesting anything, the
+runner checks `/v1/capabilities`: a Server without the arm's search mode or PreparedContext
+schema fails as a capability error. Every explicitly requested search mode must match the
+executed mode the Server reports (only `auto` accepts the Server's own choice) — a mismatch is
+recorded as an integrity failure rather than a benchmark result. Every manifest, summary, and
+unified report records the full arm block, `adapter-audit.jsonl` records the requested and
+actual strategy/mode per query, and `ensure_comparable_experiment_runs` refuses to compare two
+runs whose dataset lock, question manifest, harness commit, processor, context budget, search
+limit, Reader/Judge configuration, or revisions differ beyond the arm.
+
 Prepare bounded, replayable Reader inputs without calling a Reader. This command
 uses the pinned upstream harness to count and truncate Memory context, and
 requires an immutable Hugging Face processor revision rather than resolving the
@@ -380,7 +413,8 @@ The replay records source digests and writes `replay-manifest.json`,
 
 `run-smoke` chains every stage above into one fail-closed run directory. With a
 ready PowerContext Server and no model credentials, run the model-free mode
-first:
+first. The retrieval arm defaults to `current-memory-fts-v1` and can be selected
+explicitly with `--experiment-arm`:
 
 ```bash
 uv run --project evaluation powercontext-eval longmemeval-v2 run-smoke \
@@ -393,6 +427,7 @@ uv run --project evaluation powercontext-eval longmemeval-v2 run-smoke \
   --powercontext-revision POWERCONTEXT_GIT_SHA \
   --integration-revision INTEGRATION_GIT_SHA \
   --powercontext-base-url http://127.0.0.1:18765 \
+  --experiment-arm current-memory-fts-v1 \
   --skip-reader \
   --output-dir /path/to/new-run-artifacts
 ```
@@ -417,6 +452,48 @@ Recorded failure summaries are redacted against the configured token values, inc
 `POWERCONTEXT_TOKEN` in model-free mode. Reference answers are read only by the score stage,
 which writes the local replay artifact, and by the replay stage reading that artifact; the
 adapter, retrieval, prepare, and reader stages never read them.
+
+### Cost reporting with an explicit price policy
+
+Token usage is always recorded from the provider's own response. Model cost is reported only when
+an explicit price policy is passed; prices are never hardcoded, and an unconfigured cost stays
+`null` with a reason instead of `0`:
+
+```bash
+uv run --project evaluation powercontext-eval longmemeval-v2 run-smoke \
+  ... \
+  --price-policy '{"provider":"deepseek-openai","model":"deepseek-flash","currency":"USD","input_cache_hit_price_per_million":0.006,"input_cache_miss_price_per_million":0.3,"output_price_per_million":1.2,"price_policy_revision":"deepseek-public-list-2026-09"}' \
+  --judge-price-policy '{"provider":"deepseek-openai","model":"deepseek-flash","currency":"USD","input_cache_hit_price_per_million":0.006,"input_cache_miss_price_per_million":0.3,"output_price_per_million":1.2,"price_policy_revision":"deepseek-public-list-2026-09"}' \
+  --output-dir /path/to/new-run-artifacts
+```
+
+`run-smoke` takes a separate policy per model role because the Reader and the Judge may run
+different models; `reader-smoke` takes `--price-policy` and `score-smoke` takes
+`--judge-price-policy`. A policy must contain exactly `provider`, `model`, `currency`,
+`input_cache_hit_price_per_million`, `input_cache_miss_price_per_million`,
+`output_price_per_million`, and `price_policy_revision`. Every field is required, prices must be
+finite and non-negative, and `currency` must be `USD` because the recorded amount fields are named
+`*_usd`. A policy is applied only when both its `provider` and its `model` match the configured
+stage; otherwise the stage records `null` plus the mismatch reason instead of borrowing an
+unrelated price.
+
+Cached and uncached input are priced separately. DeepSeek reports
+`prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` alongside `prompt_tokens`, and the
+cache-hit rate is roughly fifty times cheaper than the cache-miss rate, so the reader and judge
+records keep that split instead of collapsing it into one blended input total. A response that
+reports no split cannot be priced at either rate, so its stage records `null` with that reason
+rather than an estimate.
+
+Reader cost comes from the Reader's reported usage, Judge cost from the Judge's reported usage,
+and each stage summary and manifest records the policy identity it was priced under. The unified
+report adds `usage.reader_cost`, `usage.judge_cost`, `usage.estimated_cost_usd` (the sum, only
+when every model stage that actually ran was priced in USD under one policy revision) and
+`usage.estimated_cost_note` explaining how the total was computed or why it stays `null`. The
+report decides which stages ran from the run manifest `modes` plus the stage summaries, so a
+missing, unpriced, mismatched, or differently-revisioned stage cost keeps the total `null`
+instead of silently summing the stages that happen to be present. Ingestion is model-free, so the
+report records `usage.ingestion_cost` as zero tokens, `cost_usd: 0.0`, and that reason. Without a
+policy the report keeps the `null` behavior and explains it.
 
 Regenerate or inspect a report for any saved run without a model, provider, or server:
 

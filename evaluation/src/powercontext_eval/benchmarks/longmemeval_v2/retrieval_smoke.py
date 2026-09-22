@@ -32,7 +32,13 @@ from powercontext_eval.benchmarks.longmemeval_v2.adapter import (
     PowerContextHTTPRuntime,
     PowerContextMemory,
     PowerContextMemoryAdapterError,
+    PowerContextMemoryModeError,
     PowerContextRuntime,
+)
+from powercontext_eval.benchmarks.longmemeval_v2.arms import (
+    ExperimentArm,
+    arm_manifest_record,
+    resolve_experiment_arm,
 )
 from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
     Ability,
@@ -51,6 +57,10 @@ RETRIEVAL_SUMMARY_SCHEMA = "powercontext.longmemeval-v2-retrieval-summary.v1"
 
 class RetrievalSmokeError(PowerContextEvalError):
     """A retrieval-only smoke run could not preserve its evaluation contract."""
+
+
+class RetrievalCapabilityError(RetrievalSmokeError):
+    """The Server cannot execute the search mode required by the experiment arm."""
 
 
 class RetrievalSmokeRuntime(PowerContextRuntime, Protocol):
@@ -101,7 +111,7 @@ def run_retrieval_smoke(
     integration_revision: str,
     base_url: str = "http://127.0.0.1:8000",
     token_env: str = "POWERCONTEXT_TOKEN",
-    search_mode: str = "fts",
+    experiment_arm: str | ExperimentArm | None = None,
     search_limit: int = 10,
     timeout_seconds: float = 30.0,
     runtime: RetrievalSmokeRuntime | None = None,
@@ -113,8 +123,7 @@ def run_retrieval_smoke(
     normalized_run_id = _nonblank(run_id, "run_id")
     powercontext_ref = _nonblank(powercontext_revision, "powercontext_revision")
     integration_ref = _nonblank(integration_revision, "integration_revision")
-    if search_mode not in {"auto", "fts"}:
-        raise RetrievalSmokeError("search_mode must be auto or fts")
+    arm = resolve_experiment_arm(experiment_arm)
     if isinstance(search_limit, bool) or not 1 <= search_limit <= 50:
         raise RetrievalSmokeError("search_limit must be from 1 through 50")
     if timeout_seconds <= 0:
@@ -125,7 +134,7 @@ def run_retrieval_smoke(
         token=os.getenv(token_env),
         timeout_seconds=timeout_seconds,
     )
-    _require_runtime(client, search_mode)
+    _require_runtime(client, arm)
     started_at = datetime.now(UTC)
     started_ns = time.perf_counter_ns()
     prepared = prepare_smoke_run(
@@ -180,7 +189,11 @@ def run_retrieval_smoke(
                 "audit_path": str(audit_path),
                 "base_url": base_url,
                 "token_env": token_env,
-                "search_mode": search_mode,
+                "search_mode": arm.search_mode,
+                "query_strategy": arm.retrieval_strategy,
+                "prepared_context_max_bytes": arm.prepared_context_max_bytes or 8_000,
+                "memory_projection": arm.memory_projection,
+                "task_lens": arm.task_lens,
                 "search_limit": search_limit,
                 "timeout_seconds": timeout_seconds,
             }
@@ -195,6 +208,7 @@ def run_retrieval_smoke(
             "classification": "smoke-subset-retrieval-only",
             "run_id": normalized_run_id,
             "started_at": started_at.isoformat(),
+            "experiment_arm": arm_manifest_record(arm),
             "revisions": {
                 "powercontext": powercontext_ref,
                 "integration": integration_ref,
@@ -202,14 +216,17 @@ def run_retrieval_smoke(
             "runtime": {
                 "base_url": base_url,
                 "token_env": token_env,
-                "search_mode": search_mode,
+                "search_mode": arm.search_mode,
+                "query_strategy": arm.retrieval_strategy,
+                "prepared_context_max_bytes": arm.prepared_context_max_bytes,
                 "search_limit": search_limit,
                 "timeout_seconds": timeout_seconds,
                 "reader": None,
                 "judge": None,
                 "source_projection": "full-allowed-trajectory-fields",
                 "source_chunk_bytes": DEFAULT_SOURCE_CHUNK_BYTES,
-                "memory_projection": "deterministic-compact-v1",
+                "memory_projection": arm.memory_projection,
+                "query_projection": arm.query_projection,
                 "memory_max_bytes": MAX_MEMORY_TEXT_BYTES,
             },
             "input_artifacts": {
@@ -318,6 +335,16 @@ def run_retrieval_smoke(
         except Exception as error:  # noqa: BLE001 - each query needs an independent classified result
             failed += 1
             failure_id = f"query-{question.question_id}"
+            try:
+                # The adapter keeps the failed query's provenance (requested and actual
+                # search mode) even when the query itself failed; keep it in the result.
+                metadata = adapter.post_query_hook(
+                    query=question.text,
+                    query_image=question.image,
+                    memory_context=[],
+                )
+            except Exception:  # noqa: BLE001 - failure provenance must never mask the original failure
+                metadata = None
             _append_json(
                 failures_path,
                 _failure(
@@ -335,7 +362,7 @@ def run_retrieval_smoke(
                 scope_id=scope_id,
                 status="failed",
                 memory_context=[],
-                metadata=None,
+                metadata=metadata,
                 failure_id=failure_id,
             )
         finally:
@@ -346,6 +373,7 @@ def run_retrieval_smoke(
         "schema": RETRIEVAL_SUMMARY_SCHEMA,
         "classification": "smoke-subset-retrieval-only",
         "run_id": normalized_run_id,
+        "experiment_arm": arm_manifest_record(arm),
         "completed_at": datetime.now(UTC).isoformat(),
         "question_count": len(questions),
         "succeeded": succeeded,
@@ -371,20 +399,34 @@ def run_retrieval_smoke(
     )
 
 
-def _require_runtime(runtime: RetrievalSmokeRuntime, search_mode: str) -> None:
+def _require_runtime(runtime: RetrievalSmokeRuntime, arm: ExperimentArm) -> None:
+    """Fail as a capability error before any ingestion when the arm cannot be executed."""
+
     readiness = runtime.get_readiness()
     if readiness.get("status") != "ready":
         raise RetrievalSmokeError("PowerContext Server is not ready")
     capabilities = runtime.get_capabilities()
     modes = capabilities.get("search_modes")
-    if not isinstance(modes, list) or search_mode not in modes:
-        raise RetrievalSmokeError(f"PowerContext Server does not support {search_mode} Memory search")
+    if arm.retrieval_strategy == "memory-search":
+        if arm.search_mode is None or not isinstance(modes, list) or arm.search_mode not in modes:
+            raise RetrievalCapabilityError(
+                f"PowerContext Server does not support {arm.search_mode} Memory search "
+                f"required by experiment arm {arm.arm_id}"
+            )
+    elif arm.retrieval_strategy == "prepared-context":
+        versions = capabilities.get("context_versions")
+        if not isinstance(versions, list) or "powercontext.prepared-context.v1" not in versions:
+            raise RetrievalCapabilityError(
+                f"PowerContext Server does not support PreparedContext required by experiment arm {arm.arm_id}"
+            )
+    else:
+        raise RetrievalCapabilityError(f"unsupported retrieval strategy for experiment arm {arm.arm_id}")
     source_types = capabilities.get("source_types")
     if not isinstance(source_types, list) or "content" not in source_types:
-        raise RetrievalSmokeError("PowerContext Server does not support Content Sources")
+        raise RetrievalCapabilityError("PowerContext Server does not support Content Sources")
     artifact_families = capabilities.get("artifact_families")
     if not isinstance(artifact_families, list) or "memory" not in artifact_families:
-        raise RetrievalSmokeError("PowerContext Server does not support Memory artifacts")
+        raise RetrievalCapabilityError("PowerContext Server does not support Memory artifacts")
 
 
 def _create_scope(
@@ -540,6 +582,10 @@ def _result(
         "haystack_digest": group.digest,
         "scope_id": scope_id,
         "status": status,
+        "search_mode": {
+            "requested": None if metadata is None else metadata.get("requested_mode"),
+            "actual": None if metadata is None else metadata.get("actual_mode"),
+        },
         "memory_context": memory_context,
         "context_bytes": context_bytes,
         "citations": citations,
@@ -561,12 +607,20 @@ def _failure(
         "schema": RETRIEVAL_FAILURE_SCHEMA,
         "failure_id": failure_id,
         "phase": phase,
-        "category": "infrastructure" if isinstance(error, PowerContextMemoryAdapterError) else "integration",
+        "category": _failure_category(error),
         "error_type": type(error).__name__,
         "summary": summary[:500],
         "haystack_digest": haystack_digest,
         "question_id": question_id,
     }
+
+
+def _failure_category(error: Exception) -> Literal["infrastructure", "integration", "integrity"]:
+    if isinstance(error, PowerContextMemoryModeError):
+        return "integrity"
+    if isinstance(error, PowerContextMemoryAdapterError):
+        return "infrastructure"
+    return "integration"
 
 
 def _validate_context(items: list[dict[str, str]]) -> None:

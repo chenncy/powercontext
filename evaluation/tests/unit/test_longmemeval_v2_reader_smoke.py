@@ -104,7 +104,8 @@ def test_reader_smoke_writes_responses_and_never_persists_credentials_or_gold(
     assert "gold_answer" not in output_record
     summary = json.loads(result.summary_path.read_text(encoding="utf-8"))
     assert summary["usage"] == {"input_tokens": 123, "output_tokens": 7}
-    assert summary["estimated_cost"] is None
+    assert summary["cost"]["cost_usd"] is None
+    assert summary["cost"]["unavailable_reason"] == "no price policy was configured for this run"
 
 
 def test_reader_smoke_refuses_to_overwrite_before_loading_prepared_artifacts(tmp_path: Path) -> None:
