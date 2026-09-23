@@ -37,6 +37,7 @@ from powercontext_eval.benchmarks.longmemeval_v2.catalog import (
 )
 from powercontext_eval.benchmarks.longmemeval_v2.costs import (
     ModelPricePolicy,
+    UsageAccount,
     cost_policy_record,
     usage_cost_block,
 )
@@ -45,6 +46,7 @@ from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_DEEPSEEK_TOKEN_ENV,
     DeepSeekOpenAIReader,
+    ReaderResponseError,
     ReaderTransport,
 )
 from powercontext_eval.errors import PowerContextEvalError
@@ -69,32 +71,6 @@ class JudgeJudgementError(ScoreSmokeError):
         super().__init__(message)
         self.usage = usage
         self.judge_latency_ms = judge_latency_ms
-
-
-@dataclass
-class _JudgeUsageAccount:
-    """Sum Judge call usage so completed calls stay priced even when scoring later fails."""
-
-    calls: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_hit_tokens: int = 0
-    cache_miss_tokens: int = 0
-    cache_split_reported: bool = True
-
-    def account(self, usage: object) -> None:
-        self.calls += 1
-        if not isinstance(usage, Mapping):
-            return
-        self.input_tokens += _nonnegative_int(usage.get("input_tokens"))
-        self.output_tokens += _nonnegative_int(usage.get("output_tokens"))
-        hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
-        miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
-        if hit is None or miss is None:
-            self.cache_split_reported = False
-        else:
-            self.cache_hit_tokens += hit
-            self.cache_miss_tokens += miss
 
 
 class MetricsAPI(Protocol):
@@ -222,7 +198,7 @@ def run_score_smoke(
     started_ns = time.perf_counter_ns()
     correct = 0
     failed = 0
-    judge_account = _JudgeUsageAccount()
+    judge_account = UsageAccount()
     for sequence, question in enumerate(questions, start=1):
         question_id = _nonblank(question.get("id"), "question.id")
         reader = outputs[question_id]
@@ -370,10 +346,19 @@ def _score_one(
     if evaluator in LLM_JUDGE_NAMES:
         messages = _judge_messages(metrics, evaluator, question, answer, response, parsed)
         started_ns = time.perf_counter_ns()
-        judge_response = transport.complete(
-            system=messages[0]["content"],
-            content=[{"type": "text", "text": messages[1]["content"]}],
-        )
+        try:
+            judge_response = transport.complete(
+                system=messages[0]["content"],
+                content=[{"type": "text", "text": messages[1]["content"]}],
+            )
+        except ReaderResponseError as error:
+            # The Judge transport completed and reported usage; route it through the
+            # usage-preserving failure path instead of losing the accounting.
+            raise JudgeJudgementError(
+                f"Judge response for question {question_id} could not be read: {error}",
+                usage=error.usage,
+                judge_latency_ms=round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
+            ) from error
         judge_latency_ms = round((time.perf_counter_ns() - started_ns) / 1_000_000, 3)
         usage = _judge_usage(judge_response.get("usage"))
         try:

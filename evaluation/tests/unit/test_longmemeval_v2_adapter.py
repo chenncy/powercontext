@@ -184,6 +184,32 @@ def test_l0_l1_projection_writes_two_bounded_memory_entries_without_schema_chang
     assert audit["memory_entry_count"] == 2
 
 
+def test_l0_l1_projection_keeps_the_byte_limit_when_a_trajectory_reaches_it(tmp_path: Path) -> None:
+    runtime = FakeRuntime()
+    memory = adapter(tmp_path, runtime, memory_projection="deterministic-l0-l1-v1")
+    long_trajectory = trajectory()
+    long_trajectory["states"] = [
+        {
+            "state_index": index,
+            "step": index,
+            "url": "https://example.test/state",
+            "action": "relocate " + "x" * 590,
+            "thought": "inspect " + "y" * 590,
+            "accessibility_tree": "tree " + "z" * 590,
+            "screenshot": "unused.png",
+        }
+        for index in range(10)
+    ]
+
+    memory.insert(long_trajectory)
+
+    assert len(runtime.memories) == 2
+    l0_text, l1_text = (str(entry["text"]) for entry in runtime.memories)
+    assert len(l0_text.encode()) <= 1_024
+    assert len(l1_text.encode()) == 8_192
+    assert l1_text.startswith("LongMemEval-V2 deterministic L1 trajectory summary")
+
+
 def test_query_returns_upstream_text_items_and_records_citations(tmp_path: Path) -> None:
     runtime = FakeRuntime()
     memory = adapter(tmp_path, runtime, search_mode="fts", search_limit=4)

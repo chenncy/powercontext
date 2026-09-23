@@ -57,6 +57,37 @@ class ModelPricePolicy:
     price_policy_revision: str
 
 
+@dataclass
+class UsageAccount:
+    """Sum per-call model usage so completed calls stay priced even when processing fails.
+
+    ``account`` accepts the normalized per-call usage records the transports produce
+    (``input_tokens``/``output_tokens`` plus the optional cache split); anything a call
+    did not report coerces to zero or marks the summed split incomplete.
+    """
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    cache_split_reported: bool = True
+
+    def account(self, usage: object) -> None:
+        self.calls += 1
+        if not isinstance(usage, Mapping):
+            return
+        self.input_tokens += _usage_int(usage.get("input_tokens"))
+        self.output_tokens += _usage_int(usage.get("output_tokens"))
+        hit = _usage_optional_int(usage.get("input_cache_hit_tokens"))
+        miss = _usage_optional_int(usage.get("input_cache_miss_tokens"))
+        if hit is None or miss is None:
+            self.cache_split_reported = False
+        else:
+            self.cache_hit_tokens += hit
+            self.cache_miss_tokens += miss
+
+
 def parse_cost_policy(value: object, *, label: str = "cost policy") -> ModelPricePolicy | None:
     """Parse one explicitly provided price policy; ``None`` means "no prices configured"."""
 
@@ -260,3 +291,13 @@ def _nonblank(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise CostPolicyError(f"{label} must be a non-empty string")
     return value.strip()
+
+
+def _usage_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _usage_optional_int(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None

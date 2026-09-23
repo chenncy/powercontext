@@ -541,12 +541,12 @@ def _utf8_chunks(text: str, maximum_bytes: int) -> list[str]:
     return chunks
 
 
-def _compact_memory_text(projected: str) -> str:
+def _compact_memory_text(projected: str, *, heading: str = "LongMemEval-V2 deterministic trajectory memory") -> str:
     value = json.loads(projected)
     if not isinstance(value, dict):
         raise PowerContextMemoryAdapterError("projected trajectory must be an object")
     lines = [
-        "LongMemEval-V2 deterministic trajectory memory",
+        heading,
         f"trajectory_id: {_plain(value.get('id'))}",
         f"domain: {_plain(value.get('domain'))}",
         f"environment: {_plain(value.get('environment'))}",
@@ -591,11 +591,9 @@ def _memory_projection_texts(projected: str, projection: str) -> list[tuple[str,
         ),
         1_024,
     )
-    l1 = _compact_memory_text(projected).replace(
-        "LongMemEval-V2 deterministic trajectory memory",
-        "LongMemEval-V2 deterministic L1 trajectory summary",
-        1,
-    )
+    # The final heading is built before truncation so the byte limit always applies
+    # to the text the Server will actually receive.
+    l1 = _compact_memory_text(projected, heading="LongMemEval-V2 deterministic L1 trajectory summary")
     return [("deterministic L0", l0), ("deterministic L1", l1)]
 
 

@@ -22,6 +22,7 @@ from typing import Any, Self
 import pytest
 
 from powercontext_eval.benchmarks.longmemeval_v2 import reader_smoke
+from powercontext_eval.benchmarks.longmemeval_v2.costs import ModelPricePolicy
 from powercontext_eval.benchmarks.longmemeval_v2.reader_smoke import (
     AnthropicCompatibleReader,
     DeepSeekOpenAIReader,
@@ -178,3 +179,85 @@ def test_deepseek_reader_uses_openai_messages_and_disables_thinking(monkeypatch:
         {"role": "user", "content": [{"type": "text", "text": "question"}]},
     ]
     assert "super-secret-token" not in request.data.decode()
+
+
+def test_reader_smoke_preserves_usage_when_a_completed_response_has_no_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class NoTextResponse:
+        status = 200
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "model": "deepseek-flash",
+                    "choices": [{"finish_reason": "stop", "message": {"content": "   "}}],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 20,
+                        "prompt_cache_hit_tokens": 40,
+                        "prompt_cache_miss_tokens": 60,
+                    },
+                }
+            ).encode()
+
+    def fake_urlopen(request: Any, *, timeout: float) -> NoTextResponse:
+        return NoTextResponse()
+
+    monkeypatch.setattr(reader_smoke, "urlopen", fake_urlopen)
+    reader = DeepSeekOpenAIReader(
+        "https://api.deepseek.com",
+        token="token",
+        model="deepseek-flash",
+        max_tokens=512,
+        temperature=0.0,
+        timeout_seconds=30,
+    )
+    policy = ModelPricePolicy(
+        provider="deepseek-openai",
+        model="deepseek-flash",
+        currency="USD",
+        input_cache_hit_price_per_million=1.0,
+        input_cache_miss_price_per_million=2.0,
+        output_price_per_million=3.0,
+        price_policy_revision="test-prices",
+    )
+    output = tmp_path / "reader"
+
+    with pytest.raises(ReaderSmokeError, match="Reader failed for 10"):
+        run_reader_smoke(
+            prepared_dir=prepared_artifacts(tmp_path),
+            output_dir=output,
+            provider="deepseek-openai",
+            model="deepseek-flash",
+            transport=reader,
+            price_policy=policy,
+        )
+
+    summary = json.loads((output / "reader-summary.json").read_text(encoding="utf-8"))
+    assert summary["failed"] == 10
+    assert summary["usage"] == {
+        "input_tokens": 1_000,
+        "output_tokens": 200,
+        "input_cache_hit_tokens": 400,
+        "input_cache_miss_tokens": 600,
+    }
+    assert summary["cost"]["cost_usd"] == pytest.approx(2_200 / 1_000_000)
+    failures = [
+        json.loads(line) for line in (output / "reader-failures.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(failures) == 10
+    assert all(failure["error_type"] == "ReaderResponseError" for failure in failures)
+    assert all(
+        failure["usage"]
+        == {"input_tokens": 100, "output_tokens": 20, "input_cache_hit_tokens": 40, "input_cache_miss_tokens": 60}
+        for failure in failures
+    )
+    assert all(isinstance(failure["reader_latency_ms"], (int, float)) for failure in failures)
+    assert (output / "reader-outputs.jsonl").read_text(encoding="utf-8") == ""

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import venv
 from pathlib import Path
 from typing import Any
 
@@ -153,3 +154,52 @@ def test_prepare_smoke_resolves_relative_paths_against_the_caller_cwd(
         == (tmp_path / "prepared" / "prepared-prompts.jsonl").resolve()
     )
     assert Path(kwargs["cwd"]).resolve() == harness.resolve()
+
+
+def test_prepare_smoke_launches_the_requested_virtualenv_interpreter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    venv_root = tmp_path / "harness-venv"
+    venv.create(venv_root, with_pip=False)
+    interpreter_suffix = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    retrieval_artifacts(tmp_path)
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    monkeypatch.chdir(tmp_path)
+    real_run = subprocess.run
+    launches: list[list[str]] = []
+
+    def probe_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        # Launch the constructed interpreter for real: the prepare stage depends on the
+        # requested virtualenv (whose POSIX python is a symlink), not the base one.
+        launches.append(list(command))
+        probe = real_run(
+            [command[0], "-c", "import sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert Path(probe.stdout.strip()).resolve() == venv_root.resolve()
+        prompts_path = Path(command[command.index("--prompts-path") + 1])
+        failures_path = Path(command[command.index("--failures-path") + 1])
+        summary_path = Path(command[command.index("--summary-path") + 1])
+        prompts_path.write_text("{}\n", encoding="utf-8")
+        failures_path.write_text("", encoding="utf-8")
+        summary_path.write_text("{}\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, probe.stdout, "")
+
+    monkeypatch.setattr(prepare_smoke, "validate_harness_checkout", lambda root: None)
+    monkeypatch.setattr(prepare_smoke.subprocess, "run", probe_run)
+
+    prepare_reader_inputs_smoke(
+        retrieval_dir=Path("retrieval"),
+        harness_root=Path("harness"),
+        harness_python=Path("harness-venv") / interpreter_suffix,
+        output_dir=Path("prepared"),
+        processor_revision="processor-sha",
+    )
+
+    [command] = launches
+    assert Path(command[0]).is_absolute()
+    assert command[0].replace("\\", "/").endswith(f"harness-venv/{interpreter_suffix}")

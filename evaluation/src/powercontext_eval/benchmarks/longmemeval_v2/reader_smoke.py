@@ -31,6 +31,7 @@ from urllib.request import Request, urlopen
 
 from powercontext_eval.benchmarks.longmemeval_v2.costs import (
     ModelPricePolicy,
+    UsageAccount,
     cost_policy_record,
     usage_cost_block,
 )
@@ -50,6 +51,15 @@ READER_SUMMARY_SCHEMA = "powercontext.longmemeval-v2-reader-summary.v1"
 
 class ReaderSmokeError(PowerContextEvalError):
     """Prepared prompts cannot be sent safely to the configured Reader."""
+
+
+class ReaderResponseError(ReaderSmokeError):
+    """A completed Reader response could not be turned into usable text; its usage is preserved."""
+
+    def __init__(self, message: str, *, usage: dict[str, object], latency_ms: float | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+        self.latency_ms = latency_ms
 
 
 class ReaderTransport(Protocol):
@@ -328,11 +338,7 @@ def run_reader_smoke(
     started_ns = time.perf_counter_ns()
     succeeded = 0
     failed = 0
-    input_tokens = 0
-    output_tokens = 0
-    cache_hit_tokens = 0
-    cache_miss_tokens = 0
-    cache_split_reported = True
+    account = UsageAccount()
     _create_empty(outputs_path)
     _create_empty(failures_path)
     for prompt in _jsonl(prompts_path):
@@ -341,6 +347,23 @@ def run_reader_smoke(
         question_id = _nonblank(prompt.get("question_id"), "question_id")
         try:
             output = _run_one(active_transport, prompt)
+        except ReaderResponseError as error:
+            # The transport completed and reported usage; keep the failed call priced
+            # and record its evidence instead of silently reporting zero cost.
+            failed += 1
+            account.account(error.usage)
+            failure: dict[str, object] = {
+                "schema": READER_FAILURE_SCHEMA,
+                "question_id": question_id,
+                "phase": "reader",
+                "error_type": type(error).__name__,
+                "summary": (str(error).strip() or type(error).__name__)[:500],
+                "usage": error.usage,
+            }
+            if error.latency_ms is not None:
+                failure["reader_latency_ms"] = error.latency_ms
+            _append_json(failures_path, failure)
+            continue
         except Exception as error:  # noqa: BLE001 - each request needs an independent classified failure
             failed += 1
             _append_json(
@@ -356,19 +379,7 @@ def run_reader_smoke(
             continue
         _append_json(outputs_path, output)
         succeeded += 1
-        usage = output["usage"]
-        if isinstance(usage, Mapping):
-            input_tokens += _nonnegative_int(usage.get("input_tokens"))
-            output_tokens += _nonnegative_int(usage.get("output_tokens"))
-            hit = _optional_nonnegative_int(usage.get("input_cache_hit_tokens"))
-            miss = _optional_nonnegative_int(usage.get("input_cache_miss_tokens"))
-            # One response without the split makes the summed split incomplete, so the
-            # summary keeps it null rather than pricing an understated cached portion.
-            if hit is None or miss is None:
-                cache_split_reported = False
-            else:
-                cache_hit_tokens += hit
-                cache_miss_tokens += miss
+        account.account(output["usage"])
     _write_json_exclusive(
         summary_path,
         {
@@ -379,20 +390,20 @@ def run_reader_smoke(
             "succeeded": succeeded,
             "failed": failed,
             "usage": _reader_usage_totals(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_hit_tokens=cache_hit_tokens,
-                cache_miss_tokens=cache_miss_tokens,
-                cache_split_reported=cache_split_reported,
+                input_tokens=account.input_tokens,
+                output_tokens=account.output_tokens,
+                cache_hit_tokens=account.cache_hit_tokens,
+                cache_miss_tokens=account.cache_miss_tokens,
+                cache_split_reported=account.cache_split_reported,
             ),
             "cost": usage_cost_block(
                 price_policy,
                 provider=provider,
                 model=normalized_model,
-                input_tokens=input_tokens,
-                cache_hit_tokens=cache_hit_tokens if cache_split_reported else None,
-                cache_miss_tokens=cache_miss_tokens if cache_split_reported else None,
-                output_tokens=output_tokens,
+                input_tokens=account.input_tokens,
+                cache_hit_tokens=account.cache_hit_tokens if account.cache_split_reported else None,
+                cache_miss_tokens=account.cache_miss_tokens if account.cache_split_reported else None,
+                output_tokens=account.output_tokens,
             ),
             "judge": None,
             "elapsed_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
@@ -446,11 +457,18 @@ def _run_one(transport: ReaderTransport, prompt: Mapping[str, object]) -> dict[s
     if not isinstance(system_content, str):
         raise ReaderSmokeError("prepared system message is invalid")
     started_ns = time.perf_counter_ns()
-    response = transport.complete(system=system_content, content=content)
-    answer = _response_text(response)
-    usage = response.get("usage")
-    if not isinstance(usage, Mapping):
-        usage = {}
+    try:
+        response = transport.complete(system=system_content, content=content)
+    except ReaderResponseError as error:
+        error.latency_ms = round((time.perf_counter_ns() - started_ns) / 1_000_000, 3)
+        raise
+    latency_ms = round((time.perf_counter_ns() - started_ns) / 1_000_000, 3)
+    raw_usage = response.get("usage")
+    usage = _reader_usage(raw_usage if isinstance(raw_usage, Mapping) else {})
+    try:
+        answer = _response_text(response)
+    except ReaderSmokeError as error:
+        raise ReaderResponseError(str(error), usage=usage, latency_ms=latency_ms) from error
     return {
         "schema": READER_OUTPUT_SCHEMA,
         "question_id": question_id,
@@ -461,10 +479,10 @@ def _run_one(transport: ReaderTransport, prompt: Mapping[str, object]) -> dict[s
         "prompt_sha256": prompt.get("prompt_sha256"),
         "response_text": answer,
         "response_sha256": hashlib.sha256(answer.encode()).hexdigest(),
-        "usage": _reader_usage(usage),
+        "usage": usage,
         "model": response.get("model"),
         "stop_reason": response.get("stop_reason"),
-        "reader_latency_ms": round((time.perf_counter_ns() - started_ns) / 1_000_000, 3),
+        "reader_latency_ms": latency_ms,
     }
 
 
@@ -537,24 +555,25 @@ def _response_text(response: Mapping[str, object]) -> str:
 def _normalize_deepseek_response(value: object) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise ReaderSmokeError("Reader returned a non-object response")
+    # The HTTP call already completed, so its usage stands even when the response
+    # body cannot produce text; extract it before any content validation raises.
+    raw_usage = value.get("usage")
+    usage = _deepseek_usage(raw_usage if isinstance(raw_usage, Mapping) else {})
     choices = value.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], Mapping):
-        raise ReaderSmokeError("Reader response choices are invalid")
+        raise ReaderResponseError("Reader response choices are invalid", usage=usage)
     choice = choices[0]
     message = choice.get("message")
     if not isinstance(message, Mapping):
-        raise ReaderSmokeError("Reader response message is invalid")
+        raise ReaderResponseError("Reader response message is invalid", usage=usage)
     text = message.get("content")
     if not isinstance(text, str) or not text.strip():
-        raise ReaderSmokeError("Reader response contains no text")
-    usage = value.get("usage")
-    if not isinstance(usage, Mapping):
-        usage = {}
+        raise ReaderResponseError("Reader response contains no text", usage=usage)
     return {
         "model": value.get("model"),
         "stop_reason": choice.get("finish_reason"),
         "content": [{"type": "text", "text": text}],
-        "usage": _deepseek_usage(usage),
+        "usage": usage,
     }
 
 

@@ -107,7 +107,7 @@ def prepare_reader_inputs_smoke(
             "harness": {
                 "commit": UPSTREAM_HARNESS_COMMIT,
                 "root": str(harness_root.resolve()),
-                "python": str(harness_python.resolve()),
+                "python": str(harness_python),
             },
             "processor": {"model": model, "revision": revision},
             "memory_context_max_tokens": memory_context_max_tokens,
@@ -188,7 +188,12 @@ def _validate_retrieval_artifacts(manifest: dict[str, object], summary: dict[str
 
 
 def _resolve_path(path: Path, caller_cwd: Path) -> Path:
-    return path.resolve() if path.is_absolute() else (caller_cwd / path).resolve()
+    """Absolutize against the caller's cwd without dereferencing symlinks.
+
+    ``Path.resolve()`` would replace a virtualenv's interpreter with the base Python
+    it links to, losing the venv's installed dependencies at worker launch.
+    """
+    return Path(os.path.abspath(caller_cwd / path))
 
 
 def _load_json(path: Path, label: str) -> dict[str, object]:

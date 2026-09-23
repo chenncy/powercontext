@@ -511,7 +511,7 @@ confused with the smoke subset. The recorded prerequisites, configuration templa
 cost-estimation and approval gates, output isolation, result labels, and failure-recovery
 procedure live in [docs/longmemeval-v2-full-run.md](docs/longmemeval-v2-full-run.md); the
 secret-free environment template lives in
-[docs/longmemeval-v2-run-config.example.env](docs/longmemeval-v2-run-config.example.env). A
+[deploy/longmemeval-v2-run-config.example.env](deploy/longmemeval-v2-run-config.example.env). A
 full-tier dataset lock and question manifest do not exist yet and must be created and reviewed
 before any full run.
 

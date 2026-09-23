@@ -50,7 +50,7 @@ rewriting gold prompts, reference answers, or the Memory schema. See
 
 ## Configuration template
 
-Copy [longmemeval-v2-run-config.example.env](longmemeval-v2-run-config.example.env) to a protected
+Copy [longmemeval-v2-run-config.example.env](../deploy/longmemeval-v2-run-config.example.env) to a protected
 location outside this repository, fill in the values, and load it into the shell before running.
 The file contains variable names and placeholders only; never commit a filled copy, and never pass
 a token as a command-line argument.
